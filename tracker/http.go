@@ -109,6 +109,11 @@ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error)
 	_url = httptoo.CopyURL(_url)
 	setAnnounceParams(_url, &opt.Request, opt)
 	req, err := http.NewRequest("GET", _url.String(), nil)
+    if err != nil {
+		return
+    }
+	// Force closing the connection after the response
+	req.Close = true
 	req.Header.Set("User-Agent", opt.UserAgent)
 	req.Host = opt.HostHeader
 	if opt.Context != nil {
