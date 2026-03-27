@@ -113,6 +113,7 @@ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error)
 				InsecureSkipVerify: true,
 				ServerName:         opt.ServerName,
 			},
+			IdleConnTimeout:  90 * time.Second, // Inactive connections are closed after 90 seconds
 		},
 	}).Do(req)
 	if err != nil {
