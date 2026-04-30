@@ -1,6 +1,10 @@
 module github.com/anacrolix/torrent
 
-go 1.20
+go 1.23.0
+
+toolchain go1.24.4
+
+replace github.com/trim21/bep14 v0.0.5 => github.com/olly-molly/bep14 v0.0.5-1
 
 require (
 	github.com/anacrolix/dht/v2 v2.21.1
@@ -18,7 +22,8 @@ require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/google/btree v1.1.2
 	github.com/pkg/errors v0.9.1
-	github.com/stretchr/testify v1.8.4
+	github.com/stretchr/testify v1.11.1
+	github.com/trim21/bep14 v0.0.5
 	golang.org/x/net v0.25.0
 	golang.org/x/time v0.5.0
 )
@@ -37,8 +42,9 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rs/dnscache v0.0.0-20230804202142-fc85eb664529 // indirect
 	github.com/ryszard/goskiplist v0.0.0-20150312221310-2dfbae5fcf46 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/sync v0.7.0 // indirect
-	golang.org/x/sys v0.20.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

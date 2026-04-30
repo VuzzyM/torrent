@@ -36,6 +36,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	humanize "github.com/dustin/go-humanize"
 	"github.com/google/btree"
+	"github.com/trim21/bep14"
 	"golang.org/x/time/rate"
 )
 
@@ -58,6 +59,7 @@ type Client struct {
 	onClose        []func()
 	conns          []socket
 	dhtServers     []DhtServer
+	lsdServers     []LsdServer
 	ipBlockList    iplist.Ranger
 	// Our BitTorrent protocol extension bytes, sent in our BT handshakes.
 	extensionBytes pp.PeerExtensionBits
@@ -113,6 +115,12 @@ func writeDhtServerStatus(w io.Writer, s DhtServer) {
 	spew.Fdump(w, dhtStats)
 }
 
+func writeLsdServerStatus(w io.Writer, s LsdServer) {
+	lsdStats := s.Stats()
+	fmt.Fprintf(w, "LSD server status: Default\n")
+	spew.Fdump(w, lsdStats)
+}
+
 // Writes out a human readable status of the client, such as for writing to a
 // HTTP status page.
 func (cl *Client) WriteStatus(_w io.Writer) {
@@ -127,6 +135,10 @@ func (cl *Client) WriteStatus(_w io.Writer) {
 	cl.eachDhtServer(func(s DhtServer) {
 		fmt.Fprintf(w, "%s DHT server at %s:\n", s.Addr().Network(), s.Addr().String())
 		writeDhtServerStatus(w, s)
+	})
+	cl.eachLsdServer(func(s LsdServer) {
+		fmt.Fprintf(w, "LSD server:\n")
+		writeLsdServerStatus(w, s)
 	})
 	spew.Fdump(w, cl.stats)
 	fmt.Fprintf(w, "# Torrents: %d\n", len(cl.torrentsAsSlice()))
@@ -241,6 +253,11 @@ func NewClient(cfg *ClientConfig) (cl *Client, err error) {
 		}
 	}
 
+	// Initialize LSD servers
+	if !cfg.NoLSD {
+		cl.initLsdServers()
+	}
+
 	return
 }
 
@@ -324,6 +341,43 @@ func (cl *Client) NewAnacrolixDhtServer(conn net.PacketConn) (s *dht.Server, err
 	return
 }
 
+// Creates and starts LSD servers for the client.
+func (cl *Client) initLsdServers() {
+	// Get the local port for LSD announcements
+	port := cl.LocalPort()
+	if port == 0 {
+		cl.logger.Levelf(log.Debug, "Cannot initialize LSD: no listening port available")
+		return
+	}
+
+	// Create LSD server options
+	var lsp *bep14.LSP
+
+	if (cl.config.EnableLSDIPv4 && cl.config.EnableLSDIPv6) ||
+		(!cl.config.EnableLSDIPv4 && !cl.config.EnableLSDIPv6) {
+		lsp = bep14.New(uint16(port), bep14.EnableV6(), bep14.EnableV4())
+	} else if cl.config.EnableLSDIPv4 {
+		lsp = bep14.New(uint16(port), bep14.EnableV4())
+	} else {
+		lsp = bep14.New(uint16(port), bep14.EnableV6())
+	}
+
+	// Wrap it
+	lsdServer := LsdServerWrapper{
+		LSP:    lsp,
+		logger: cl.logger,
+		cl:     cl,
+	}
+
+	// Add to servers list
+	cl.lsdServers = append(cl.lsdServers, lsdServer)
+
+	// Start the server
+	lsdServer.Start()
+
+	cl.logger.Levelf(log.Info, "LSD server initialized on port %d", port)
+}
+
 func (cl *Client) Closed() <-chan struct{} {
 	cl.lock()
 	defer cl.unlock()
@@ -334,6 +388,19 @@ func (cl *Client) eachDhtServer(f func(DhtServer)) {
 	for _, ds := range cl.dhtServers {
 		f(ds)
 	}
+}
+
+func (cl *Client) eachLsdServer(f func(LsdServer)) {
+	for _, ls := range cl.lsdServers {
+		f(ls)
+	}
+}
+
+func (cl *Client) haveLsdServer() (ret bool) {
+	cl.eachLsdServer(func(_ LsdServer) {
+		ret = true
+	})
+	return
 }
 
 func (cl *Client) closeSockets() {
@@ -351,6 +418,7 @@ func (cl *Client) Close() {
 	defer cl.unlock()
 	cl.closed.Set()
 	// cl.eachDhtServer(func(s DhtServer) { s.Close() }) // TODO
+	cl.eachLsdServer(func(s LsdServer) { s.Close() })
 	cl.closeSockets()
 	for _, t := range cl.torrents {
 		t.close()
@@ -1073,6 +1141,12 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	cl.eachDhtServer(func(s DhtServer) {
 		if cl.config.PeriodicallyAnnounceTorrentsToDht {
 			go t.dhtAnnouncer(s)
+		}
+	})
+
+	cl.eachLsdServer(func(s LsdServer) {
+		if cl.config.PeriodicallyAnnounceTorrentsToLsd {
+			go t.lsdAnnouncer(s)
 		}
 	})
 	cl.torrents[infoHash] = t

@@ -41,6 +41,15 @@ type ClientConfig struct {
 	ConfigureAnacrolixDhtServer       func(*dht.ServerConfig)
 	PeriodicallyAnnounceTorrentsToDht bool
 
+	// Don't create an LSD.
+	NoLSD bool `long:"disable-lsd"`
+	// Enable IPv4 for LSD
+	EnableLSDIPv4 bool
+	// Enable IPv6 for LSD
+	EnableLSDIPv6 bool
+	// Periodically announce torrents to LSD
+	PeriodicallyAnnounceTorrentsToLsd bool
+
 	// Never send chunks to peers.
 	NoUpload bool `long:"no-upload"`
 	// Disable uploading even when it isn't fair.
@@ -163,6 +172,7 @@ func NewDefaultClientConfig() *ClientConfig {
 			return func() ([]dht.Addr, error) { return dht.GlobalBootstrapAddrs(network) }
 		},
 		PeriodicallyAnnounceTorrentsToDht: true,
+		PeriodicallyAnnounceTorrentsToLsd: true,
 		ListenHost:                        func(string) string { return "" },
 		UploadRateLimiter:                 unlimited,
 		DownloadRateLimiter:               unlimited,

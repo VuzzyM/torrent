@@ -32,6 +32,7 @@ const (
 	peerSourceDHTGetPeers     = "Hg" // Peers we found by searching a DHT.
 	peerSourceDHTAnnouncePeer = "Ha" // Peers that were announced to us by a DHT.
 	peerSourcePEX             = "X"
+	peerSourceLsd             = "L" // Peers discovered via Local Service Discovery
 )
 
 // Maintains the state of a connection with a peer.

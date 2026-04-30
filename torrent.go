@@ -101,6 +101,8 @@ type Torrent struct {
 	trackerAnnouncers map[string]*trackerScraper
 	// How many times we've initiated a DHT announce. TODO: Move into stats.
 	numDHTAnnounces int
+	//
+	numLSDAnnounces int
 
 	// Name used if the info name isn't available. Should be cleared when the
 	// Info does become available.
@@ -1391,6 +1393,33 @@ func (t *Torrent) dhtAnnouncer(s DhtServer) {
 		err := t.announceToDht(s)
 		if err != nil {
 			t.logger.WithDefaultLevel(log.Debug).Printf("error announcing %q to DHT: %s", t, err)
+		}
+	}
+}
+
+// Announce the torrent to an LSD server
+func (t *Torrent) AnnounceToLsd(s LsdServer) error {
+	// Convert infoHash to string format for LSD
+	infoHashStr := fmt.Sprintf("%x", t.infoHash)
+	return s.Announce(infoHashStr)
+}
+
+// Periodically announce to LSD server
+func (t *Torrent) lsdAnnouncer(s LsdServer) {
+	cl := t.cl
+
+	for {
+		select {
+		case <-t.closed.LockedChan(cl.locker()):
+			return
+		case <-t.wantPeersEvent.LockedChan(cl.locker()):
+		}
+		cl.lock()
+		t.numLSDAnnounces++
+		cl.unlock()
+		err := t.AnnounceToLsd(s)
+		if err != nil {
+			t.logger.WithDefaultLevel(log.Debug).Printf("error announcing %q to LSD: %s", t, err)
 		}
 	}
 }
