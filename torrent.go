@@ -1398,28 +1398,34 @@ func (t *Torrent) dhtAnnouncer(s DhtServer) {
 }
 
 // Announce the torrent to an LSD server
-func (t *Torrent) AnnounceToLsd(s LsdServer) error {
-	// Convert infoHash to string format for LSD
-	infoHashStr := fmt.Sprintf("%x", t.infoHash)
-	return s.Announce(infoHashStr)
-}
-
-// Periodically announce to LSD server
 func (t *Torrent) lsdAnnouncer(s LsdServer) {
 	cl := t.cl
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	cl.lock()
+	t.numLSDAnnounces++
+	cl.unlock()
+	if err := t.AnnounceToLsd(s); err != nil {
+		t.logger.WithDefaultLevel(log.Debug).
+			Printf("error announcing %q to LSD: %s", t, err)
+	}
 
 	for {
 		select {
 		case <-t.closed.LockedChan(cl.locker()):
 			return
-		case <-t.wantPeersEvent.LockedChan(cl.locker()):
-		}
-		cl.lock()
-		t.numLSDAnnounces++
-		cl.unlock()
-		err := t.AnnounceToLsd(s)
-		if err != nil {
-			t.logger.WithDefaultLevel(log.Debug).Printf("error announcing %q to LSD: %s", t, err)
+
+		case <-ticker.C:
+			cl.lock()
+			t.numLSDAnnounces++
+			cl.unlock()
+
+			if err := t.AnnounceToLsd(s); err != nil {
+				t.logger.WithDefaultLevel(log.Debug).
+					Printf("error announcing %q to LSD: %s", t, err)
+			}
 		}
 	}
 }
