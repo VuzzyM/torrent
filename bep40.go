@@ -101,8 +101,9 @@ func isPrivateIP(ip net.IP) bool {
 }
 
 func bep40Priority(a, b IpPort) (peerPriority, error) {
+
 	if isPrivateIP(b.IP) {
-		return (1 << 20), nil
+		return (1 << 32) - 1, nil
 	}
 
 	bs, err := bep40PriorityBytes(a, b)
