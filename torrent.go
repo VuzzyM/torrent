@@ -1398,6 +1398,13 @@ func (t *Torrent) dhtAnnouncer(s DhtServer) {
 }
 
 // Announce the torrent to an LSD server
+func (t *Torrent) AnnounceToLsd(s LsdServer) error {
+	// Convert infoHash to string format for LSD
+	infoHashStr := fmt.Sprintf("%x", t.infoHash)
+	return s.Announce(infoHashStr)
+}
+
+// Periodically announce to LSD server
 func (t *Torrent) lsdAnnouncer(s LsdServer) {
 	cl := t.cl
 
