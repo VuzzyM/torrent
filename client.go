@@ -107,14 +107,14 @@ func (cl *Client) OnLPDAnnouncement(addr string, infohashes []string) {
 	// Add discovered peers to all other torrents
 	cl.rLock()
 	var rest []*Torrent
-	for _, t := range cl.torrents {
+	for t := range cl.torrents {
 		if _, ok := announced[t]; !ok {
 			rest = append(rest, t)
 		}
 	}
 	cl.rUnlock()
 
-	for _, t := range rest {
+	for t := range cl.torrents {
 		lpdPeer(t, addr)
 	}
 }
