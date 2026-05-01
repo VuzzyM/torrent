@@ -237,8 +237,14 @@ func (t *Torrent) addPeer(p Peer) {
 		torrent.Add("peers not added because of bad addr", 1)
 		return
 	}
-	if t.peers.Add(p) {
+	added := false
+	if replaced, ok := t.peers.AddReturningReplacedPeer(p); ok {
 		torrent.Add("peers replaced", 1)
+		if !replaced.equal(p) {
+			added = true
+		}
+	} else {
+		added = true
 	}
 	t.openNewConns()
 	for t.peers.Len() > cl.config.TorrentPeersHighWater {
@@ -246,6 +252,9 @@ func (t *Torrent) addPeer(p Peer) {
 		if ok {
 			torrent.Add("excess reserve peers discarded", 1)
 		}
+	}
+	if added {
+		cl.event.Broadcast()
 	}
 }
 

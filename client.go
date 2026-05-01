@@ -73,6 +73,7 @@ type Client struct {
 	dialRateLimiter *rate.Limiter
 	numHalfOpen     int
 	upnpMappings    []*upnpMapping
+	lpd *lpdServer
 }
 
 type ipStr string
@@ -89,6 +90,45 @@ func (cl *Client) badPeerIPsLocked() []string {
 
 func (cl *Client) PeerID() PeerID {
 	return cl.peerID
+}
+
+// OnLPDAnnouncement implements lpdClient. It adds addr to any torrent matching
+// an announced infohash, and also to all other active torrents (LPD is the
+// only source of local IPs).
+func (cl *Client) OnLPDAnnouncement(addr string, infohashes []string) {
+	announced := make(map[*Torrent]struct{}, len(infohashes))
+	for _, ih := range infohashes {
+		if t, ok := cl.Torrent(metainfo.NewHashFromHex(ih)); ok {
+			lpdPeer(t, addr)
+			announced[t] = struct{}{}
+		}
+	}
+
+	// Add discovered peers to all other torrents
+	cl.rLock()
+	var rest []*Torrent
+	for t := range cl.torrents {
+		if _, ok := announced[t]; !ok {
+			rest = append(rest, t)
+		}
+	}
+	cl.rUnlock()
+
+	for _, t := range rest {
+		lpdPeer(t, addr)
+	}
+}
+
+// TorrentInfohashesAndPort implements lpdClient. It returns a snapshot of
+// active torrent infohash hex strings and the listen port.
+func (cl *Client) TorrentInfohashesAndPort() (port int, infohashes []string) {
+	cl.rLock()
+	defer cl.rUnlock()
+	port = cl.LocalPort()
+	for t := range cl.torrents {
+		infohashes = append(infohashes, t.InfoHash().HexString())
+	}
+	return
 }
 
 func (cl *Client) LocalPort() (port int) {
@@ -239,6 +279,12 @@ func NewClient(cfg *ClientConfig) (cl *Client, err error) {
 				cl.dhtServers = append(cl.dhtServers, AnacrolixDhtServerWrapper{ds})
 			}
 		}
+	}
+	
+	if cfg.LocalServiceDiscovery != nil {
+		cl.lpd = &lpdServer{}
+		cl.lpd.lpdStart(cl, *cfg.LocalServiceDiscovery)
+		cl.onClose = append(cl.onClose, cl.lpd.lpdStop)
 	}
 
 	return
@@ -1062,9 +1108,9 @@ func (cl *Client) AddTorrentInfoHash(infoHash metainfo.Hash) (t *Torrent, new bo
 // existing torrent returned with `new` set to `false`
 func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStorage storage.ClientImpl) (t *Torrent, new bool) {
 	cl.lock()
-	defer cl.unlock()
 	t, ok := cl.torrents[infoHash]
 	if ok {
+		cl.unlock()
 		return
 	}
 	new = true
@@ -1080,6 +1126,14 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	t.updateWantPeersEvent()
 	// Tickle Client.waitAccept, new torrent may want conns.
 	cl.event.Broadcast()
+
+	cl.unlock()
+
+	if cl.lpd != nil {
+		cl.lpd.lpdPeers(t)
+		cl.lpd.lpdForce()
+	}
+
 	return
 }
 
