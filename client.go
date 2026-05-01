@@ -107,7 +107,7 @@ func (cl *Client) OnLPDAnnouncement(addr string, infohashes []string) {
 	// Add discovered peers to all other torrents
 	cl.rLock()
 	var rest []*Torrent
-	for t := range cl.torrents {
+	for _, t := range cl.torrents {
 		if _, ok := announced[t]; !ok {
 			rest = append(rest, t)
 		}
@@ -125,7 +125,7 @@ func (cl *Client) TorrentInfohashesAndPort() (port int, infohashes []string) {
 	cl.rLock()
 	defer cl.rUnlock()
 	port = cl.LocalPort()
-	for t := range cl.torrents {
+	for _, t := range cl.torrents {
 		infohashes = append(infohashes, t.InfoHash().HexString())
 	}
 	return
