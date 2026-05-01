@@ -281,14 +281,12 @@ func NewClient(cfg *ClientConfig) (cl *Client, err error) {
 		}
 	}
 	
-	   cfg.LocalServiceDiscovery = &LocalServiceDiscoveryConfig{
-	   IPv4: true,
-	   IPv6: true,
-    }
-       cl.lpd = &lpdServer{}
-       cl.lpd.lpdStart(cl, *cfg.LocalServiceDiscovery)
-       cl.onClose = append(cl.onClose, cl.lpd.lpdStop)
-
+	if cfg.LocalServiceDiscovery != nil {
+		cl.lpd = &lpdServer{}
+		cl.lpd.lpdStart(cl, *cfg.LocalServiceDiscovery)
+		cl.onClose = append(cl.onClose, cl.lpd.lpdStop)
+	}
+	
 	return
 }
 
