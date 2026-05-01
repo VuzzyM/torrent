@@ -238,12 +238,8 @@ func (t *Torrent) addPeer(p Peer) {
 		return
 	}
 	added := false
-	if replaced, ok := t.peers.AddReturningReplacedPeer(p); ok {
+	if t.peers.Add(p) {
 		torrent.Add("peers replaced", 1)
-		if !replaced.equal(p) {
-			added = true
-		}
-	} else {
 		added = true
 	}
 	t.openNewConns()
