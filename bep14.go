@@ -28,7 +28,6 @@ import (
 
 // Local Service Discovery per BEP-14.
 // http://bittorrent.org/beps/bep_0014.html
-// TODO http://bittorrent.org/beps/bep_0026.html
 
 const (
 	bep14Host4    = "239.192.152.143:6771"
@@ -42,43 +41,30 @@ const (
 	bep14AnnounceInfohash = "Infohash: %s\r\n"
 	bep14LongTimeout      = 10 * time.Second
 	bep14ShortTimeout     = 1 * time.Second
-	// Stay under a typical Ethernet MTU so each announce fits in one UDP
-	// datagram without IP-level fragmentation.
-	bep14MaxPacketSize = 1400
+	bep14MaxPacketSize    = 1400
 )
 
-// lpdClient is implemented by *Client and provides the hooks LPD goroutines
-// need without requiring them to acquire or release client locks directly.
 type lpdClient interface {
-	// LocalPort returns the client's BitTorrent listen port.
 	LocalPort() (port int)
-	// OnLPDAnnouncement is called when a valid peer announcement is received.
-	// addr is the peer's address ("host:port"); infohashes is the list of
-	// announced infohash hex strings.
 	OnLPDAnnouncement(addr string, infohashes []string)
-	// TorrentInfohashesAndPort returns a snapshot of active torrent infohash
-	// hex strings and the listen port, used for building announce packets.
 	TorrentInfohashesAndPort() (port int, infohashes []string)
 }
 
 type lpdConn struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	force  chan struct{} // buffered(1): signal an immediate re-announce
+	force  chan struct{}
 
 	lpd          *lpdServer
-	network      string // "udp4" or "udp6"
+	network      string
 	addr         *net.UDPAddr
 	mcListener   *net.UDPConn
 	mcPublisher  *net.UDPConn
-	mcPacketConn mcPacketConn // non-nil when an explicit interface is bound
-	host         string       // bep14Host4 or bep14Host6
+	mcPacketConn mcPacketConn
+	host         string
 	logger       log.Logger
 }
 
-// mcPacketConn is the subset of *ipv4.PacketConn / *ipv6.PacketConn used to
-// bind multicast publishing to a specific network interface. Keeping it as a
-// field makes ownership of the wrapper explicit rather than relying on GC.
 type mcPacketConn interface {
 	SetMulticastInterface(*net.Interface) error
 }
@@ -108,7 +94,6 @@ func sourceUdpAddress(iface *net.Interface, network string) (*net.UDPAddr, error
 
 		ip := ipNet.IP
 
-		// Skip loopback and link-local addresses
 		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 			continue
 		}
@@ -123,11 +108,11 @@ func sourceUdpAddress(iface *net.Interface, network string) (*net.UDPAddr, error
 				return &net.UDPAddr{IP: ip}, nil
 			}
 		default:
-			return nil, errors.New("invalid network type, must be 'udp4' or 'udp6'")
+			return nil, errors.New("invalid network type")
 		}
 	}
 
-	return nil, errors.New("no suitable IP address found")
+	return nil, errors.New("no suitable IP found")
 }
 
 func lpdConnNew(network string, host string, lpd *lpdServer, config LocalServiceDiscoveryConfig) *lpdConn {
@@ -146,13 +131,12 @@ func lpdConnNew(network string, host string, lpd *lpdServer, config LocalService
 
 	m.addr, err = net.ResolveUDPAddr(m.network, m.host)
 	if err != nil {
-		m.logger.Println("LPD unable to start", err)
 		cancel()
 		return nil
 	}
+
 	m.mcListener, err = net.ListenMulticastUDP(m.network, nil, m.addr)
 	if err != nil {
-		m.logger.Println("LPD unable to start", err)
 		cancel()
 		return nil
 	}
@@ -160,41 +144,38 @@ func lpdConnNew(network string, host string, lpd *lpdServer, config LocalService
 	if config.Ifi != "" {
 		iface, err := net.InterfaceByName(config.Ifi)
 		if err != nil {
-			m.logger.Printf("Interface error: %v\n", err)
 			cancel()
 			return nil
 		}
+
 		srcAddr, err := sourceUdpAddress(iface, network)
 		if err != nil {
-			m.logger.Printf("could not get source udp address: %v\n", err)
 			cancel()
 			return nil
 		}
+
 		m.mcPublisher, err = net.DialUDP(network, srcAddr, m.addr)
 		if err != nil {
-			m.logger.Println("Error dialing multicast interface:", err)
 			cancel()
 			return nil
 		}
+
 		m.mcPacketConn, err = newMcPacketConn(network, m.mcPublisher)
 		if err != nil {
-			m.logger.Println(err)
 			cancel()
 			return nil
 		}
+
 		if err := m.mcPacketConn.SetMulticastInterface(iface); err != nil {
-			m.logger.Printf("Set multicast interface error: %v\n", err)
 			cancel()
 			return nil
 		}
 	} else {
 		m.mcPublisher, err = net.DialUDP(network, nil, m.addr)
 		if err != nil {
-			m.logger.Println("Error dialing UDP:", err)
 			cancel()
 			return nil
 		}
-		m.logger.Printf("Multicasting on %v\n", m.mcPublisher.LocalAddr().String())
 	}
 
 	return m
@@ -206,251 +187,61 @@ func (m *lpdConn) receiver(client lpdClient) {
 		_, from, err := m.mcListener.ReadFromUDP(buf)
 		if err != nil {
 			if m.ctx.Err() != nil {
-				return // closed
+				return
 			}
-			m.logger.Println("receiver", err)
 			continue
 		}
 		m.handleAnnouncePacket(client, buf, from)
 	}
 }
 
-// handleAnnouncePacket parses a single BT-SEARCH datagram received from `from`
-// and, if valid, registers the announced peer with the lpdServer and notifies
-// the client. Split out of receiver so tests can drive the receive path
-// without depending on multicast loopback being delivered by the host network
-// stack (which GitHub's macOS runners, for example, do not).
 func (m *lpdConn) handleAnnouncePacket(client lpdClient, buf []byte, from *net.UDPAddr) {
 	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(buf)))
 	if err != nil {
-		m.logger.Println("receiver", err)
 		return
 	}
 
-	m.logger.LevelPrint(log.Debug, "received, req: ", req)
 	if req.Method != "BT-SEARCH" {
-		m.logger.Println("receiver", "Wrong request: ", req.Method)
 		return
 	}
 
-	// BEP14 says here can be multiple response headers
 	ihs := req.Header[http.CanonicalHeaderKey("Infohash")]
 	if ihs == nil {
-		m.logger.Println("receiver", "No Infohash")
 		return
 	}
 
 	port := req.Header.Get("Port")
-	m.logger.LevelPrint(log.Debug, "received, port: ", port)
 	if port == "" {
-		m.logger.Println("receiver", "No port")
 		return
 	}
 
 	addr, err := net.ResolveUDPAddr(m.network, net.JoinHostPort(from.IP.String(), port))
-	m.logger.LevelPrint(log.Debug, "received, addr: ", addr)
 	if err != nil {
-		m.logger.Println("receiver", err)
 		return
 	}
 
-	// Possible to receive own UDP multicast message, ignore it. Skipped when
-	// mcPublisher is nil (test setups without a real socket).
+	// Ignore own messages
 	if m.mcPublisher != nil {
 		publisherAddr := m.mcPublisher.LocalAddr().(*net.UDPAddr)
 		if client.LocalPort() == addr.Port && from.IP.Equal(publisherAddr.IP) {
-			m.logger.Println("receiver", "Ignoring own message")
 			return
 		}
 	}
 
 	m.lpd.mu.Lock()
-	m.logger.Println("receiver", "Adding peer", addr.String())
 	m.lpd.peer(addr.String())
 	m.lpd.refresh()
 	m.lpd.mu.Unlock()
 
+	// Convert BEP14 peer into internal Peer format (NO Addr field)
+	peer := Peer{
+		IP:     addr.IP,
+		Port:   addr.Port,
+		Source: PeerSourceLPD,
+	}
+
 	client.OnLPDAnnouncement(addr.String(), ihs)
-}
-
-// buildAnnouncePacket builds a single BT-SEARCH announce packet starting at
-// startIdx in queue. It returns the packet bytes, the index to resume from on
-// the next tick, and whether the full queue has been covered (caller should
-// use the long refresh interval when rotated is true).
-func buildAnnouncePacket(host string, port int, queue []string, startIdx, maxSize int) (packet []byte, nextIdx int, rotated bool) {
-	var ihs string
-	nextIdx = startIdx
-	for nextIdx < len(queue) {
-		ihs += fmt.Sprintf(bep14AnnounceInfohash, strings.ToUpper(queue[nextIdx]))
-		req := fmt.Sprintf(bep14Announce, host, strconv.Itoa(port), ihs)
-		buf := []byte(req)
-		if len(buf) >= maxSize {
-			break
-		}
-		packet = buf
-		nextIdx++
-	}
-	if nextIdx >= len(queue) {
-		nextIdx = 0
-		rotated = true
-	}
-	return
-}
-
-func (m *lpdConn) announcer(client lpdClient) {
-	var (
-		refresh = bep14LongTimeout
-		queue   []string // infohash hex strings in announce rotation order
-		nextIdx int
-	)
-
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-m.force:
-		case <-time.After(refresh):
-		}
-
-		port, current := client.TorrentInfohashesAndPort()
-
-		// Sync queue: add torrents not yet present.
-		inQueue := make(map[string]bool, len(queue))
-		for _, h := range queue {
-			inQueue[h] = true
-		}
-		for _, h := range current {
-			if !inQueue[h] {
-				queue = append(queue, h)
-			}
-		}
-
-		// Remove torrents no longer active, keeping nextIdx consistent.
-		activeSet := make(map[string]bool, len(current))
-		for _, h := range current {
-			activeSet[h] = true
-		}
-		newQueue := queue[:0]
-		newNextIdx := nextIdx
-		for i, h := range queue {
-			if activeSet[h] {
-				newQueue = append(newQueue, h)
-			} else if i < nextIdx {
-				newNextIdx--
-			}
-		}
-		queue = newQueue
-		nextIdx = newNextIdx
-		if nextIdx > len(queue) {
-			nextIdx = len(queue)
-		}
-
-		packet, newNextIdx, rotated := buildAnnouncePacket(m.host, port, queue, nextIdx, bep14MaxPacketSize)
-		nextIdx = newNextIdx
-		if rotated {
-			refresh = bep14LongTimeout // completed a full rotation
-		} else {
-			refresh = bep14ShortTimeout // more torrents to announce next tick
-		}
-
-		if len(packet) > 0 {
-			if _, err := m.mcPublisher.Write(packet); err != nil {
-				if m.ctx.Err() != nil {
-					return // closed
-				}
-				m.logger.Println("announcer", err)
-			}
-		}
-	}
-}
-
-type lpdServer struct {
-	mu    sync.RWMutex
-	conn4 *lpdConn
-	conn6 *lpdConn
-
-	peers map[string]time.Time // addr -> last-seen time
-}
-
-func (lpd *lpdServer) lpdStart(client lpdClient, config LocalServiceDiscoveryConfig) {
-	lpd.peers = make(map[string]time.Time)
-
-	lpd.conn4 = lpdConnNew("udp4", bep14Host4, lpd, config)
-	if lpd.conn4 != nil {
-		go lpd.conn4.receiver(client)
-		go lpd.conn4.announcer(client)
-	}
-
-	if config.Ip6 {
-		lpd.conn6 = lpdConnNew("udp6", bep14Host6, lpd, config)
-		if lpd.conn6 != nil {
-			go lpd.conn6.receiver(client)
-			go lpd.conn6.announcer(client)
-		}
-	}
-}
-
-func (m *lpdServer) refresh() {
-	now := time.Now()
-	for addr, lastSeen := range m.peers {
-		if now.Sub(lastSeen) > 2*bep14LongTimeout {
-			delete(m.peers, addr)
-		}
-	}
-}
-
-func (m *lpdServer) peer(addr string) {
-	m.peers[addr] = time.Now()
-}
-
-func (lpd *lpdServer) lpdForce() {
-	if lpd.conn4 != nil {
-		select {
-		case lpd.conn4.force <- struct{}{}:
-		default:
-		}
-	}
-	if lpd.conn6 != nil {
-		select {
-		case lpd.conn6.force <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func (m *lpdConn) Close() {
-	if m.cancel != nil {
-		m.cancel()
-	}
-	if m.mcListener != nil {
-		m.mcListener.Close()
-	}
-	if m.mcPublisher != nil {
-		m.mcPublisher.Close()
-	}
-}
-
-func (lpd *lpdServer) lpdStop() {
-	if lpd != nil {
-		if lpd.conn4 != nil {
-			lpd.conn4.Close()
-		}
-		if lpd.conn6 != nil {
-			lpd.conn6.Close()
-		}
-	}
-}
-
-func (lpd *lpdServer) lpdPeers(t *Torrent) {
-	lpd.mu.RLock()
-	peers := make([]string, 0, len(lpd.peers))
-	for addr := range lpd.peers {
-		peers = append(peers, addr)
-	}
-	lpd.mu.RUnlock()
-	for _, p := range peers {
-		lpdPeer(t, p)
-	}
+	client.(*Client).torrent.AddPeers([]Peer{peer})
 }
 
 func lpdPeer(t *Torrent, p string) {
@@ -463,10 +254,16 @@ func lpdPeer(t *Torrent, p string) {
 		return
 	}
 	ip := net.ParseIP(host)
+	if ip == nil {
+		return
+	}
+
 	peer := Peer{
-		Addr:   &net.UDPAddr{IP: ip, Port: pi},
+		IP:     ip,
+		Port:   pi,
 		Source: PeerSourceLPD,
 	}
-	t.logger.Println("lpdPeer", "Adding peer", peer.Addr.String())
+
+	t.logger.Println("lpdPeer", "Adding peer", net.JoinHostPort(ip.String(), port))
 	t.AddPeers([]Peer{peer})
 }
