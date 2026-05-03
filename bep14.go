@@ -40,8 +40,8 @@ const (
 		"\r\n" +
 		"\r\n"
 	bep14AnnounceInfohash = "Infohash: %s\r\n"
-	bep14LongTimeout      = 10 * time.Second
-	bep14ShortTimeout     = 1 * time.Second
+	bep14LongTimeout      = 5 * time.Minute
+	bep14ShortTimeout     = 2 * time.Second
 	// Stay under a typical Ethernet MTU so each announce fits in one UDP
 	// datagram without IP-level fragmentation.
 	bep14MaxPacketSize = 1400
