@@ -462,12 +462,11 @@ func lpdPeer(t *Torrent, p string) {
 	if err != nil {
 		return
 	}
-	ip := net.ParseIP(host)
+	ip := c.remoteAddr.IP
 	peer := Peer{
-		IP:     ip,
-		Port:   pi,
+		Addr:   &net.UDPAddr{IP: ip, Port: pi},
 		Source: PeerSourceLPD,
 	}
-	t.logger.Println("lpdPeer", "Adding peer", peer.addr())
+	t.logger.Println("lpdPeer", "Adding peer", peer.Addr.String())
 	t.AddPeers([]Peer{peer})
 }
