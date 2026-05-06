@@ -40,8 +40,8 @@ const (
 		"\r\n" +
 		"\r\n"
 	bep14AnnounceInfohash = "Infohash: %s\r\n"
-	bep14LongTimeout      = 10 * time.Second
-	bep14ShortTimeout     = 1 * time.Second
+	bep14LongTimeout      = 5 * time.Minute
+	bep14ShortTimeout     = 2 * time.Second
 	// Stay under a typical Ethernet MTU so each announce fits in one UDP
 	// datagram without IP-level fragmentation.
 	bep14MaxPacketSize = 1400
@@ -74,6 +74,7 @@ type lpdConn struct {
 	mcPacketConn mcPacketConn // non-nil when an explicit interface is bound
 	host         string       // bep14Host4 or bep14Host6
 	logger       log.Logger
+	Source       netip.AddrPort
 }
 
 // mcPacketConn is the subset of *ipv4.PacketConn / *ipv6.PacketConn used to
@@ -454,15 +455,15 @@ func (lpd *lpdServer) lpdPeers(t *Torrent) {
 }
 
 func lpdPeer(t *Torrent, p string) {
-	addr, err := net.ResolveUDPAddr("udp", p)
+	source, err := netip.ParseAddrPort(p)
 	if err != nil {
 		return
 	}
-
 	peer := Peer{
-		Addr:   addr,
+		IP:     net.IP(source.Addr().AsSlice()),
+		Port:   int(source.Port()),
 		Source: PeerSourceLPD,
 	}
-	t.logger.Println("lpdPeer", "Adding peer", peer.Addr.String())
+	t.logger.Println("lpdPeer", "Adding peer", peer.addr())
 	t.addPeers([]Peer{peer})
-}
+}   
