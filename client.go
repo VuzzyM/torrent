@@ -95,10 +95,10 @@ func (cl *Client) PeerID() PeerID {
 // OnLPDAnnouncement implements lpdClient. It adds addr to any torrent matching
 // an announced infohash, and also to all other active torrents (LPD is the
 // only source of local IPs).
-func (cl *Client) OnLPDAnnouncement(addr string, infohashes []metainfo.Hash) {
+func (cl *Client) OnLPDAnnouncement(addr string, infohashes []string) {
 	announced := make(map[*Torrent]struct{}, len(infohashes))
 	for _, ih := range infohashes {
-		if t, ok := cl.Torrent(ih); ok {
+		if t, ok := cl.Torrent(metainfo.NewHashFromHex(ih)); ok {
 			lpdPeer(t, addr)
 			announced[t] = struct{}{}
 		}
