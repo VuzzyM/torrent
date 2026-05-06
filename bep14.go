@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,8 +40,8 @@ const (
 		"\r\n" +
 		"\r\n"
 	bep14AnnounceInfohash = "Infohash: %s\r\n"
-	bep14LongTimeout      = 5 * time.Minute
-	bep14ShortTimeout     = 2 * time.Second
+	bep14LongTimeout      = 10 * time.Second
+	bep14ShortTimeout     = 1 * time.Second
 	// Stay under a typical Ethernet MTU so each announce fits in one UDP
 	// datagram without IP-level fragmentation.
 	bep14MaxPacketSize = 1400
@@ -69,7 +68,7 @@ type lpdConn struct {
 
 	lpd          *lpdServer
 	network      string // "udp4" or "udp6"
-	addr         *netip.AddrPort
+	addr         *net.UDPAddr
 	mcListener   *net.UDPConn
 	mcPublisher  *net.UDPConn
 	mcPacketConn mcPacketConn // non-nil when an explicit interface is bound
@@ -95,7 +94,7 @@ func newMcPacketConn(network string, c net.PacketConn) (mcPacketConn, error) {
 	}
 }
 
-func sourceAddrPortess(iface *net.Interface, network string) (*netip.AddrPort, error) {
+func sourceUdpAddress(iface *net.Interface, network string) (*net.UDPAddr, error) {
 	addrs, err := iface.Addrs()
 	if err != nil {
 		return nil, err
@@ -117,11 +116,11 @@ func sourceAddrPortess(iface *net.Interface, network string) (*netip.AddrPort, e
 		switch network {
 		case "udp4":
 			if ip.To4() != nil {
-				return &netip.AddrPort{IP: ip}, nil
+				return &net.UDPAddr{IP: ip}, nil
 			}
 		case "udp6":
 			if ip.To4() == nil && ip.To16() != nil {
-				return &netip.AddrPort{IP: ip}, nil
+				return &net.UDPAddr{IP: ip}, nil
 			}
 		default:
 			return nil, errors.New("invalid network type, must be 'udp4' or 'udp6'")
@@ -145,7 +144,7 @@ func lpdConnNew(network string, host string, lpd *lpdServer, config LocalService
 
 	var err error
 
-	m.addr, err = netip.ParseAddrPort(m.network, m.host)
+	m.addr, err = net.ResolveUDPAddr(m.network, m.host)
 	if err != nil {
 		m.logger.Println("LPD unable to start", err)
 		cancel()
@@ -165,7 +164,7 @@ func lpdConnNew(network string, host string, lpd *lpdServer, config LocalService
 			cancel()
 			return nil
 		}
-		srcAddr, err := sourceAddrPortess(iface, network)
+		srcAddr, err := sourceUdpAddress(iface, network)
 		if err != nil {
 			m.logger.Printf("could not get source udp address: %v\n", err)
 			cancel()
@@ -221,7 +220,7 @@ func (m *lpdConn) receiver(client lpdClient) {
 // the client. Split out of receiver so tests can drive the receive path
 // without depending on multicast loopback being delivered by the host network
 // stack (which GitHub's macOS runners, for example, do not).
-func (m *lpdConn) handleAnnouncePacket(client lpdClient, buf []byte, from *netip.AddrPort) {
+func (m *lpdConn) handleAnnouncePacket(client lpdClient, buf []byte, from *net.UDPAddr) {
 	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(buf)))
 	if err != nil {
 		m.logger.Println("receiver", err)
@@ -248,7 +247,7 @@ func (m *lpdConn) handleAnnouncePacket(client lpdClient, buf []byte, from *netip
 		return
 	}
 
-	addr, err := netip.ParseAddrPort(m.network, net.JoinHostPort(from.IP.String(), port))
+	addr, err := net.ResolveUDPAddr(m.network, net.JoinHostPort(from.IP.String(), port))
 	m.logger.LevelPrint(log.Debug, "received, addr: ", addr)
 	if err != nil {
 		m.logger.Println("receiver", err)
@@ -258,7 +257,7 @@ func (m *lpdConn) handleAnnouncePacket(client lpdClient, buf []byte, from *netip
 	// Possible to receive own UDP multicast message, ignore it. Skipped when
 	// mcPublisher is nil (test setups without a real socket).
 	if m.mcPublisher != nil {
-		publisherAddr := m.mcPublisher.LocalAddr().(*netip.AddrPort)
+		publisherAddr := m.mcPublisher.LocalAddr().(*net.UDPAddr)
 		if client.LocalPort() == addr.Port && from.IP.Equal(publisherAddr.IP) {
 			m.logger.Println("receiver", "Ignoring own message")
 			return
@@ -455,25 +454,15 @@ func (lpd *lpdServer) lpdPeers(t *Torrent) {
 }
 
 func lpdPeer(t *Torrent, p string) {
-	ap, err := netip.ParseAddrPort(p)
+	addr, err := net.ResolveUDPAddr("udp", p)
 	if err != nil {
-		host, port, err := net.SplitHostPort(p)
-		if err != nil {
-			return
-		}
-		addr, err := netip.ParseAddr(host)
-		if err != nil {
-			return
-		}
-		pi, err := strconv.Atoi(port)
-		if err != nil || pi < 0 || pi > 65535 {
-			return
-		}
-		ap = netip.AddrPortFrom(addr, uint16(pi))
+		return
 	}
-	t.logger.Println("lpdPeer", "Adding peer", ap.String())
-	t.addPeers([]Peer{{
-		Addr:   ap,
+
+	peer := Peer{
+		Addr:   addr,
 		Source: PeerSourceLPD,
-	}})
+	}
+	t.logger.Println("lpdPeer", "Adding peer", peer.Addr.String())
+	t.addPeers([]Peer{peer})
 }
