@@ -460,7 +460,7 @@ func lpdPeerAddrPort(t *Torrent, source netip.AddrPort) {
 	peer := Peer{
 		IP:     ip,
 		Port:   port,
-		Source: PeerSourceLPD
+		Source: PeerSourceLPD,
 	}
 	t.logger.Println("lpdPeer", "Adding peer", net.JoinHostPort(ip.String(), strconv.Itoa(port)))
 	t.addPeers([]Peer{peer})
