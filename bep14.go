@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,7 +74,6 @@ type lpdConn struct {
 	mcPacketConn mcPacketConn // non-nil when an explicit interface is bound
 	host         string       // bep14Host4 or bep14Host6
 	logger       log.Logger
-	Source       netip.AddrPort
 }
 
 // mcPacketConn is the subset of *ipv4.PacketConn / *ipv6.PacketConn used to
@@ -456,15 +454,20 @@ func (lpd *lpdServer) lpdPeers(t *Torrent) {
 }
 
 func lpdPeer(t *Torrent, p string) {
-	source, err := netip.ParseAddrPort(p)
+	host, port, err := net.SplitHostPort(p)
 	if err != nil {
 		return
 	}
+	pi, err := strconv.Atoi(port)
+	if err != nil {
+		return
+	}
+	ip := net.ParseIP(host)
 	peer := Peer{
-		IP:     net.IP(source.Addr().AsSlice()),
-		Port:   int(source.Port()),
+		IP:     ip,
+		Port:   pi,
 		Source: PeerSourceLPD,
 	}
 	t.logger.Println("lpdPeer", "Adding peer", peer.addr())
-	t.addPeers([]Peer{peer})
-}   
+	t.AddPeers([]Peer{peer})
+}
