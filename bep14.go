@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/http"
 	"strconv"
 	"strings"
@@ -453,20 +454,25 @@ func (lpd *lpdServer) lpdPeers(t *Torrent) {
 	}
 }
 
-func lpdPeer(t *Torrent, p string) {
-	host, port, err := net.SplitHostPort(p)
-	if err != nil {
+func lpdPeerAddrPort(t *Torrent, source netip.AddrPort) {
+	if !source.Addr().IsValid() {
 		return
 	}
-	pi, err := strconv.Atoi(port)
-	if err != nil {
-		return
-	}
-	ip := net.IP(host)
+	ip := append(net.IP(nil), source.Addr().AsSlice()...)
+	port := int(source.Port())
 	peer := Peer{
-		Addr:   &net.UDPAddr{IP: ip, Port: pi},
+		IP:     ip,
+		Port:   port,
 		Source: PeerSourceLPD,
 	}
-	t.logger.Println("lpdPeer", "Adding peer", peer.Addr.String())
-	t.AddPeers([]Peer{peer})
+	t.logger.Println("lpdPeer", "Adding peer", source.String())
+	t.addPeers([]Peer{peer})
+}
+
+func lpdPeer(t *Torrent, p string) {
+	addr, err := netip.ParseAddrPort(p)
+	if err != nil {
+		return
+	}
+	lpdPeerAddrPort(t, addr)
 }
