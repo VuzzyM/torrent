@@ -458,21 +458,14 @@ func lpdPeerAddrPort(t *Torrent, source netip.AddrPort) {
 	if !source.Addr().IsValid() {
 		return
 	}
-	ip := append(net.IP(nil), source.Addr().AsSlice()...)
-	port := int(source.Port())
-	peer := Peer{
-		IP:     ip,
-		Port:   port,
+	addr := &net.UDPAddr{
+		IP:   net.IP(source.Addr().AsSlice()),
+		Port: int(source.Port()),
+	}
+	t.logger.Println("lpdPeer", "Adding peer", addr.String())
+	t.addPeers([]Peer{{
+		IP:     addr.IP,
+		Port:   addr.Port,
 		Source: PeerSourceLPD,
-	}
-	t.logger.Println("lpdPeer", "Adding peer", source.String())
-	t.addPeers([]Peer{peer})
-}
-
-func lpdPeer(t *Torrent, p string) {
-	addr, err := netip.ParseAddrPort(p)
-	if err != nil {
-		return
-	}
-	lpdPeerAddrPort(t, addr)
+	}})
 }
