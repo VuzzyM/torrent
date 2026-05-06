@@ -98,7 +98,7 @@ func (cl *Client) PeerID() PeerID {
 func (cl *Client) OnLPDAnnouncement(addr string, infohashes []string) {
 	announced := make(map[*Torrent]struct{}, len(infohashes))
 	for _, ih := range infohashes {
-		if t, ok := cl.Torrent(metainfo.NewHashFromHex(ih)); ok {
+		if t, ok := cl.Torrent(infoHash metainfo.Hash(ih)); ok {
 			lpdPeer(t, addr)
 			announced[t] = struct{}{}
 		}
