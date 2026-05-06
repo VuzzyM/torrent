@@ -469,7 +469,7 @@ func lpdPeer(t *Torrent, p string) {
 	peer := Peer{
 		IP:     ip,
 		Port:   pi,
-		Source: peerSourceLPD,
+		Source: PeerSourceLPD,
 	}
 	addr := &net.UDPAddr{
 		IP:   peer.IP,
