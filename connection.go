@@ -1264,9 +1264,6 @@ func (cn *connection) rw() io.ReadWriter {
 
 // Handle a received chunk from a peer.
 func (c *connection) receiveChunk(msg *pp.Message) error {
-	if len(c.requests) == 0 {
-		return
-	}
 	t := c.t
 	cl := t.cl
 	torrent.Add("chunks received", 1)
