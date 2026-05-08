@@ -1463,6 +1463,8 @@ func (c *connection) numLocalRequests() int {
 }
 
 func (c *connection) deleteRequest(r request) bool {
+	c.mu().Lock()
+    defer c.mu().Unlock()
 	if _, ok := c.requests[r]; !ok {
 		return false
 	}
@@ -1473,16 +1475,13 @@ func (c *connection) deleteRequest(r request) bool {
 		delete(c.t.lastRequested, r)
 	}
 	pr := c.t.pendingRequests
-	// Safely decrease pending request count, ignore if already removed.
-    n, ok := pr[r]
-	if !ok || n <= 0 {
-		return false
-    }
-	n--
+	pr[r]--
+	n := pr[r]
 	if n == 0 {
 		delete(pr, r)
-    } else {
-		pr[r] = n
+	}
+	if n < 0 {
+		panic(n)
 	}
 	c.updateRequests()
 	for _c := range c.t.conns {
