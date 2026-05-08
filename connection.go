@@ -1264,6 +1264,9 @@ func (cn *connection) rw() io.ReadWriter {
 
 // Handle a received chunk from a peer.
 func (c *connection) receiveChunk(msg *pp.Message) error {
+	if len(c.requests) == 0 {
+		return
+	}
 	t := c.t
 	cl := t.cl
 	torrent.Add("chunks received", 1)
@@ -1463,8 +1466,6 @@ func (c *connection) numLocalRequests() int {
 }
 
 func (c *connection) deleteRequest(r request) bool {
-	c.mu().Lock()
-    defer c.mu().Unlock()
 	if _, ok := c.requests[r]; !ok {
 		return false
 	}
@@ -1475,13 +1476,15 @@ func (c *connection) deleteRequest(r request) bool {
 		delete(c.t.lastRequested, r)
 	}
 	pr := c.t.pendingRequests
-	pr[r]--
-	n := pr[r]
-	if n == 0 {
-		delete(pr, r)
-	}
-	if n < 0 {
-		panic(n)
+	if _, ok := pr[r]; ok {
+		pr[r]--
+		n := pr[r]
+		if n == 0 {
+			delete(pr, r)
+		}
+		if n < 0 {
+			panic(n)
+		}
 	}
 	c.updateRequests()
 	for _c := range c.t.conns {
@@ -1493,7 +1496,11 @@ func (c *connection) deleteRequest(r request) bool {
 }
 
 func (c *connection) deleteAllRequests() {
+	var reqs []request
 	for r := range c.requests {
+		reqs = append(reqs, r)
+	}
+	for _, r := range reqs {
 		c.deleteRequest(r)
 	}
 	if len(c.requests) != 0 {
