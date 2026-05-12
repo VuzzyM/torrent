@@ -1473,15 +1473,13 @@ func (c *connection) deleteRequest(r request) bool {
 		delete(c.t.lastRequested, r)
 	}
 	pr := c.t.pendingRequests
-	if _, ok := pr[r]; ok {
-		pr[r]--
-		n := pr[r]
-		if n == 0 {
-			delete(pr, r)
-		}
-		if n < 0 {
-			panic(n)
-		}
+	pr[r]--
+	n := pr[r]
+	if n == 0 {
+		delete(pr, r)
+	}
+	if n < 0 {
+		panic(n)
 	}
 	c.updateRequests()
 	for _c := range c.t.conns {
@@ -1493,11 +1491,7 @@ func (c *connection) deleteRequest(r request) bool {
 }
 
 func (c *connection) deleteAllRequests() {
-	var reqs []request
 	for r := range c.requests {
-		reqs = append(reqs, r)
-	}
-	for _, r := range reqs {
 		c.deleteRequest(r)
 	}
 	if len(c.requests) != 0 {
