@@ -32,7 +32,7 @@ const (
 	peerSourceDHTGetPeers     = "Hg" // Peers we found by searching a DHT.
 	peerSourceDHTAnnouncePeer = "Ha" // Peers that were announced to us by a DHT.
 	peerSourcePEX             = "X"
-	peerSourceLPD             = "L" // Peer discovered through local peer discovery
+    peerSourceLPD             = "L" // Peer discovered through local peer discovery
 )
 
 // Maintains the state of a connection with a peer.
@@ -478,59 +478,75 @@ func (cn *connection) SetInterested(interested bool, msg func(pp.Message) bool) 
 type messageWriter func(pp.Message) bool
 
 // Proxies the messageWriter's response.
-func (cn *connection) request(r request, mw messageWriter) bool {
-	if _, ok := cn.requests[r]; ok {
-		panic("chunk already requested")
-	}
-	if !cn.PeerHasPiece(pieceIndex(r.Index)) {
-		panic("requesting piece peer doesn't have")
-	}
-	if _, ok := cn.t.conns[cn]; !ok {
-		panic("requesting but not in active conns")
-	}
-	if cn.closed.IsSet() {
-		panic("requesting when connection is closed")
-	}
-	if cn.PeerChoked {
-		if cn.peerAllowedFast.Get(int(r.Index)) {
-			torrent.Add("allowed fast requests sent", 1)
-		} else {
-			panic("requesting while choked and not allowed fast")
-		}
-	}
-	if cn.t.hashingPiece(pieceIndex(r.Index)) {
-		panic("piece is being hashed")
-	}
-	if cn.t.pieceQueuedForHash(pieceIndex(r.Index)) {
-		panic("piece is queued for hash")
-	}
-	if cn.requests == nil {
-		cn.requests = make(map[request]struct{})
-	}
-	cn.requests[r] = struct{}{}
-	if cn.validReceiveChunks == nil {
-		cn.validReceiveChunks = make(map[request]struct{})
-	}
-	cn.validReceiveChunks[r] = struct{}{}
-	cn.t.pendingRequests[r]++
-	cn.t.lastRequested[r] = time.AfterFunc(cn.t.duplicateRequestTimeout, func() {
+func (c *connection) request(r request, mw messageWriter) bool {
+    if _, ok := c.requests[r]; ok {
+        panic("chunk already requested")
+    }
+    if !c.PeerHasPiece(pieceIndex(r.Index)) {
+        panic("requesting piece peer doesn't have")
+    }
+    if _, ok := c.t.conns[c]; !ok {
+        panic("requesting but not in active conns")
+    }
+    if c.closed.IsSet() {
+        panic("requesting when connection is closed")
+    }
+    if c.PeerChoked {
+        if c.peerAllowedFast.Get(int(r.Index)) {
+            torrent.Add("allowed fast requests sent", 1)
+        } else {
+            panic("requesting while choked and not allowed fast")
+        }
+    }
+    if c.t.hashingPiece(pieceIndex(r.Index)) {
+        panic("piece is being hashed")
+    }
+    if c.t.pieceQueuedForHash(pieceIndex(r.Index)) {
+        panic("piece is queued for hash")
+    }
+    if c.requests == nil {
+        c.requests = make(map[request]struct{})
+    }
+    c.requests[r] = struct{}{}
+    if c.validReceiveChunks == nil {
+        c.validReceiveChunks = make(map[request]struct{})
+    }
+    c.validReceiveChunks[r] = struct{}{}
+    
+    c.t.pendingRequestsMu.Lock()
+    c.t.pendingRequests[r]++
+    c.t.pendingRequestsMu.Unlock()
+    
+    c.t.lastRequestedMu.Lock()
+    if oldTimer, ok := c.t.lastRequested[r]; ok {
+        oldTimer.Stop()
+    }
+    c.t.lastRequested[r] = time.AfterFunc(c.t.duplicateRequestTimeout, func() {
 		torrent.Add("duplicate request timeouts", 1)
-		cn.mu().Lock()
-		defer cn.mu().Unlock()
-		delete(cn.t.lastRequested, r)
-		for cn := range cn.t.conns {
-			if cn.PeerHasPiece(pieceIndex(r.Index)) {
-				cn.updateRequests()
+
+		c.t.lastRequestedMu.Lock()
+		delete(c.t.lastRequested, r)
+		c.t.lastRequestedMu.Unlock()
+
+		go func() {
+			c.mu().Lock()
+			defer c.mu().Unlock()
+			for cn := range c.t.conns {
+				if cn.PeerHasPiece(pieceIndex(r.Index)) {
+					cn.updateRequests()
+				}
 			}
-		}
+		}()
 	})
-	cn.updateExpectingChunks()
-	return mw(pp.Message{
-		Type:   pp.Request,
-		Index:  r.Index,
-		Begin:  r.Begin,
-		Length: r.Length,
-	})
+    c.t.lastRequestedMu.Unlock()
+    
+    c.updateExpectingChunks()
+    return mw(pp.Message{
+        Type:   pp.Request,
+        Index:  r.Index,
+        Begin:  r.Begin,
+        Length: r.Length,
+    })
 }
 
 func (cn *connection) fillWriteBuffer(msg func(pp.Message) bool) {
@@ -774,7 +790,10 @@ func (cn *connection) iterPendingRequests(piece pieceIndex, f func(request) bool
 	return iterUndirtiedChunks(piece, cn.t, func(cs chunkSpec) bool {
 		r := request{pp.Integer(piece), cs}
 		if cn.t.requestStrategy == 3 {
-			if _, ok := cn.t.lastRequested[r]; ok {
+			cn.t.lastRequestedMu.RLock()
+			_, ok := cn.t.lastRequested[r]
+			cn.t.lastRequestedMu.RUnlock()
+			if ok {
 				// This piece has been requested on another connection, and
 				// the duplicate request timer is still running.
 				return true
@@ -1468,10 +1487,19 @@ func (c *connection) deleteRequest(r request) bool {
 	}
 	delete(c.requests, r)
 	c.updateExpectingChunks()
-	if t, ok := c.t.lastRequested[r]; ok {
-		t.Stop()
+	
+	c.t.lastRequestedMu.RLock()
+	timer, ok := c.t.lastRequested[r]
+	c.t.lastRequestedMu.RUnlock()
+	
+	if ok {
+		timer.Stop()
+		c.t.lastRequestedMu.Lock()
 		delete(c.t.lastRequested, r)
+		c.t.lastRequestedMu.Unlock()
 	}
+	
+	c.t.pendingRequestsMu.Lock()
 	pr := c.t.pendingRequests
 	pr[r]--
 	n := pr[r]
@@ -1481,7 +1509,10 @@ func (c *connection) deleteRequest(r request) bool {
 	if n < 0 {
 		panic(n)
 	}
+	c.t.pendingRequestsMu.Unlock()
+	
 	c.updateRequests()
+	
 	for _c := range c.t.conns {
 		if !_c.Interested && _c != c && c.PeerHasPiece(pieceIndex(r.Index)) {
 			_c.updateRequests()

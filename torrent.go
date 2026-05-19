@@ -138,9 +138,12 @@ type Torrent struct {
 
 	// Count of each request across active connections.
 	pendingRequests map[request]int
+	pendingRequestsMu sync.RWMutex
+	
 	// The last time we requested a chunk. Deleting the request from any
 	// connection will clear this value.
 	lastRequested map[request]*time.Timer
+	lastRequestedMu sync.RWMutex
 }
 
 func (t *Torrent) tickleReaders() {
