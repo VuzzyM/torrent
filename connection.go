@@ -479,49 +479,49 @@ type messageWriter func(pp.Message) bool
 
 // Proxies the messageWriter's response.
 func (c *connection) request(r request, mw messageWriter) bool {
-    if _, ok := c.requests[r]; ok {
-        panic("chunk already requested")
-    }
-    if !c.PeerHasPiece(pieceIndex(r.Index)) {
-        panic("requesting piece peer doesn't have")
-    }
-    if _, ok := c.t.conns[c]; !ok {
-        panic("requesting but not in active conns")
-    }
-    if c.closed.IsSet() {
-        panic("requesting when connection is closed")
-    }
-    if c.PeerChoked {
-        if c.peerAllowedFast.Get(int(r.Index)) {
-            torrent.Add("allowed fast requests sent", 1)
-        } else {
-            panic("requesting while choked and not allowed fast")
-        }
-    }
-    if c.t.hashingPiece(pieceIndex(r.Index)) {
-        panic("piece is being hashed")
-    }
-    if c.t.pieceQueuedForHash(pieceIndex(r.Index)) {
-        panic("piece is queued for hash")
-    }
-    if c.requests == nil {
-        c.requests = make(map[request]struct{})
-    }
-    c.requests[r] = struct{}{}
-    if c.validReceiveChunks == nil {
-        c.validReceiveChunks = make(map[request]struct{})
-    }
-    c.validReceiveChunks[r] = struct{}{}
-    
-    c.t.pendingRequestsMu.Lock()
-    c.t.pendingRequests[r]++
-    c.t.pendingRequestsMu.Unlock()
-    
-    c.t.lastRequestedMu.Lock()
-    if oldTimer, ok := c.t.lastRequested[r]; ok {
-        oldTimer.Stop()
-    }
-    c.t.lastRequested[r] = time.AfterFunc(c.t.duplicateRequestTimeout, func() {
+	if _, ok := c.requests[r]; ok {
+		panic("chunk already requested")
+	}
+	if !c.PeerHasPiece(pieceIndex(r.Index)) {
+		panic("requesting piece peer doesn't have")
+	}
+	if _, ok := c.t.conns[c]; !ok {
+		panic("requesting but not in active conns")
+	}
+	if c.closed.IsSet() {
+		panic("requesting when connection is closed")
+	}
+	if c.PeerChoked {
+		if c.peerAllowedFast.Get(int(r.Index)) {
+			torrent.Add("allowed fast requests sent", 1)
+		} else {
+			panic("requesting while choked and not allowed fast")
+		}
+	}
+	if c.t.hashingPiece(pieceIndex(r.Index)) {
+		panic("piece is being hashed")
+	}
+	if c.t.pieceQueuedForHash(pieceIndex(r.Index)) {
+		panic("piece is queued for hash")
+	}
+	if c.requests == nil {
+		c.requests = make(map[request]struct{})
+	}
+	c.requests[r] = struct{}{}
+	if c.validReceiveChunks == nil {
+		c.validReceiveChunks = make(map[request]struct{})
+	}
+	c.validReceiveChunks[r] = struct{}{}
+
+	c.t.pendingRequestsMu.Lock()
+	c.t.pendingRequests[r]++
+	c.t.pendingRequestsMu.Unlock()
+
+	c.t.lastRequestedMu.Lock()
+	if oldTimer, ok := c.t.lastRequested[r]; ok {
+		oldTimer.Stop()
+	}
+	c.t.lastRequested[r] = time.AfterFunc(c.t.duplicateRequestTimeout, func() {
 		torrent.Add("duplicate request timeouts", 1)
 
 		c.t.lastRequestedMu.Lock()
@@ -538,15 +538,15 @@ func (c *connection) request(r request, mw messageWriter) bool {
 			}
 		}()
 	})
-    c.t.lastRequestedMu.Unlock()
-    
-    c.updateExpectingChunks()
-    return mw(pp.Message{
-        Type:   pp.Request,
-        Index:  r.Index,
-        Begin:  r.Begin,
-        Length: r.Length,
-    })
+	c.t.lastRequestedMu.Unlock()
+
+	c.updateExpectingChunks()
+	return mw(pp.Message{
+		Type:   pp.Request,
+		Index:  r.Index,
+		Begin:  r.Begin,
+		Length: r.Length,
+	})
 }
 
 func (cn *connection) fillWriteBuffer(msg func(pp.Message) bool) {
@@ -1487,18 +1487,18 @@ func (c *connection) deleteRequest(r request) bool {
 	}
 	delete(c.requests, r)
 	c.updateExpectingChunks()
-	
+
 	c.t.lastRequestedMu.RLock()
 	timer, ok := c.t.lastRequested[r]
 	c.t.lastRequestedMu.RUnlock()
-	
+
 	if ok {
 		timer.Stop()
 		c.t.lastRequestedMu.Lock()
 		delete(c.t.lastRequested, r)
 		c.t.lastRequestedMu.Unlock()
 	}
-	
+
 	c.t.pendingRequestsMu.Lock()
 	pr := c.t.pendingRequests
 	pr[r]--
@@ -1510,9 +1510,9 @@ func (c *connection) deleteRequest(r request) bool {
 		panic(n)
 	}
 	c.t.pendingRequestsMu.Unlock()
-	
+
 	c.updateRequests()
-	
+
 	for _c := range c.t.conns {
 		if !_c.Interested && _c != c && c.PeerHasPiece(pieceIndex(r.Index)) {
 			_c.updateRequests()

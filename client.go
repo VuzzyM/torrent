@@ -73,7 +73,7 @@ type Client struct {
 	dialRateLimiter *rate.Limiter
 	numHalfOpen     int
 	upnpMappings    []*upnpMapping
-	lpd *lpdServer
+	lpd             *lpdServer
 }
 
 type ipStr string
@@ -280,13 +280,13 @@ func NewClient(cfg *ClientConfig) (cl *Client, err error) {
 			}
 		}
 	}
-	
+
 	if cfg.LocalServiceDiscovery != nil {
 		cl.lpd = &lpdServer{}
 		cl.lpd.lpdStart(cl, *cfg.LocalServiceDiscovery)
 		cl.onClose = append(cl.onClose, cl.lpd.lpdStop)
 	}
-	
+
 	return
 }
 
@@ -1085,10 +1085,10 @@ func (cl *Client) newTorrent(ih metainfo.Hash, specStorage storage.ClientImpl) (
 		},
 		duplicateRequestTimeout: 1 * time.Second,
 	}
-	
+
 	t.pendingRequests = make(map[request]int)
 	t.lastRequested = make(map[request]*time.Timer)
-	
+
 	// t.logger = cl.logger.Clone().AddValue(t)
 	t.logger = cl.logger.WithContextValue(t)
 	t.setChunkSize(defaultChunkSize)
@@ -1405,7 +1405,7 @@ func (cl *Client) acceptLimitClearer() {
 				torrents = append(torrents, t)
 			}
 			cl.unlock()
-			
+
 			for _, t := range torrents {
 				t.cl.lock()
 				conns := make([]*connection, 0, len(t.conns))
@@ -1413,12 +1413,12 @@ func (cl *Client) acceptLimitClearer() {
 					conns = append(conns, c)
 				}
 				t.cl.unlock()
-				
+
 				for _, c := range conns {
 					c.deleteAllRequests()
 				}
 			}
-			
+
 			cl.lock()
 			cl.clearAcceptLimits()
 			cl.unlock()
