@@ -241,6 +241,7 @@ func (t *Torrent) addPeer(p Peer) {
 		return
 	}
 	if t.peers.Add(p) {
+		cl.event.Broadcast()
 		torrent.Add("peers replaced", 1)
 	}
 	t.openNewConns()
