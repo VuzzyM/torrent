@@ -1129,13 +1129,6 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	new = true
 
 	t = cl.newTorrent(infoHash, specStorage)
-	if specInfoBytes != nil {
-		err = t.setInfoBytes(specInfoBytes)
-		if err != nil {
-			cl.unlock()
-			return
-		}
-	}
 	cl.eachDhtServer(func(s DhtServer) {
 		if cl.config.PeriodicallyAnnounceTorrentsToDht {
 			go t.dhtAnnouncer(s)
@@ -1150,9 +1143,14 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	cl.unlock()
 
 	// BEP 27: private torrents must not receive or announce via Local Peer Discovery.
-	if cl.lpd != nil && !t.isPrivate() {
-		cl.lpd.lpdPeers(t)
-		cl.lpd.lpdForce()
+	if cl.lpd != nil {
+		go func() {
+			<-t.GotInfo()
+			if !t.isPrivate() { 
+				cl.lpd.lpdPeers(t) 
+				cl.lpd.lpdForce() 
+			}
+		}()
 	}
 
 	return
