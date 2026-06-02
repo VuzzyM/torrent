@@ -1164,14 +1164,14 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 // torrent is already present (i.e. `new` return value is `true`)
 func (cl *Client) AddTorrentSpec(spec *TorrentSpec) (t *Torrent, new bool, err error) {
 	t, new = cl.AddTorrentInfoHashWithStorage(spec.InfoHash, spec.Storage)
+	if spec.DisplayName != "" {
+		t.SetDisplayName(spec.DisplayName)
+	}
 	if spec.InfoBytes != nil {
 		err = t.SetInfoBytes(spec.InfoBytes)
 		if err != nil {
 			return
 		}
-	}
-	if spec.DisplayName != "" {
-		t.SetDisplayName(spec.DisplayName)
 	}
 	cl.lock()
 	defer cl.unlock()
