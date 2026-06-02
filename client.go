@@ -1121,9 +1121,9 @@ func (cl *Client) AddTorrentInfoHash(infoHash metainfo.Hash) (t *Torrent, new bo
 // existing torrent returned with `new` set to `false`
 func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStorage storage.ClientImpl) (t *Torrent, new bool) {
 	cl.lock()
+	defer cl.unlock()
 	t, ok := cl.torrents[infoHash]
 	if ok {
-		cl.unlock()
 		return
 	}
 	new = true
@@ -1139,9 +1139,6 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	t.updateWantPeersEvent()
 	// Tickle Client.waitAccept, new torrent may want conns.
 	cl.event.Broadcast()
-
-	cl.unlock()
-
 	return
 }
 
