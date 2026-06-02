@@ -1167,10 +1167,12 @@ func (cl *Client) AddTorrentSpec(spec *TorrentSpec) (t *Torrent, new bool, err e
 	t.maybeNewConns()
 	
 	cl.unlock()
+	
 	if cl.lpd != nil && !t.isPrivate() {
 		cl.lpd.lpdPeers(t)
 		cl.lpd.lpdForce()
 	}
+	
 	return
 }
 
