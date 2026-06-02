@@ -1145,6 +1145,8 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	// BEP 27: private torrents must not receive or announce via Local Peer Discovery.
 	if cl.lpd != nil {
 		go func() {
+			// Wait until the torrent metadata becomes available
+			// This ensures t.isPrivate() can correctly read the privacy flag before initiating LPD
 			<-t.GotInfo()
 			if !t.isPrivate() { 
 				cl.lpd.lpdPeers(t) 
