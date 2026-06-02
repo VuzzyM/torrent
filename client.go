@@ -1158,19 +1158,19 @@ func (cl *Client) AddTorrentSpec(spec *TorrentSpec) (t *Torrent, new bool, err e
 		if err != nil {
 			return
 		}
-		// BEP 27: announce via LPD only after metadata is known
-		if cl.lpd != nil && !t.isPrivate() {
-			cl.lpd.lpdPeers(t)
-			cl.lpd.lpdForce()
-		}
 	}
 	cl.lock()
-	defer cl.unlock()
 	if spec.ChunkSize != 0 {
 		t.setChunkSize(pp.Integer(spec.ChunkSize))
 	}
 	t.addTrackers(spec.Trackers)
 	t.maybeNewConns()
+	
+	cl.unlock()
+	if spec.InfoBytes != nil && cl.lpd != nil && !t.isPrivate() {
+		cl.lpd.lpdPeers(t)
+		cl.lpd.lpdForce()
+	}
 	return
 }
 
