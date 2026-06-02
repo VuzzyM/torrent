@@ -1121,9 +1121,9 @@ func (cl *Client) AddTorrentInfoHash(infoHash metainfo.Hash) (t *Torrent, new bo
 // existing torrent returned with `new` set to `false`
 func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStorage storage.ClientImpl) (t *Torrent, new bool) {
 	cl.lock()
-	defer cl.unlock()
 	t, ok := cl.torrents[infoHash]
 	if ok {
+		cl.unlock()
 		return
 	}
 	new = true
@@ -1139,6 +1139,15 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	t.updateWantPeersEvent()
 	// Tickle Client.waitAccept, new torrent may want conns.
 	cl.event.Broadcast()
+
+	cl.unlock()
+
+	// BEP 27: private torrents must not receive or announce via Local Peer Discovery.
+	if cl.lpd != nil && !t.isPrivate() {
+		cl.lpd.lpdPeers(t)
+		cl.lpd.lpdForce()
+	}
+
 	return
 }
 
@@ -1150,29 +1159,22 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 // torrent is already present (i.e. `new` return value is `true`)
 func (cl *Client) AddTorrentSpec(spec *TorrentSpec) (t *Torrent, new bool, err error) {
 	t, new = cl.AddTorrentInfoHashWithStorage(spec.InfoHash, spec.Storage)
-	if spec.DisplayName != "" {
-		t.SetDisplayName(spec.DisplayName)
-	}
 	if spec.InfoBytes != nil {
 		err = t.SetInfoBytes(spec.InfoBytes)
 		if err != nil {
 			return
 		}
 	}
+	if spec.DisplayName != "" {
+		t.SetDisplayName(spec.DisplayName)
+	}
 	cl.lock()
+	defer cl.unlock()
 	if spec.ChunkSize != 0 {
 		t.setChunkSize(pp.Integer(spec.ChunkSize))
 	}
 	t.addTrackers(spec.Trackers)
 	t.maybeNewConns()
-	
-	cl.unlock()
-	
-	if cl.lpd != nil && !t.isPrivate() {
-		cl.lpd.lpdPeers(t)
-		cl.lpd.lpdForce()
-	}
-	
 	return
 }
 
