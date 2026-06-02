@@ -1129,6 +1129,13 @@ func (cl *Client) AddTorrentInfoHashWithStorage(infoHash metainfo.Hash, specStor
 	new = true
 
 	t = cl.newTorrent(infoHash, specStorage)
+	if specInfoBytes != nil {
+		err = t.setInfoBytes(specInfoBytes)
+		if err != nil {
+			cl.unlock()
+			return
+		}
+	}
 	cl.eachDhtServer(func(s DhtServer) {
 		if cl.config.PeriodicallyAnnounceTorrentsToDht {
 			go t.dhtAnnouncer(s)
