@@ -1246,7 +1246,7 @@ func (c *connection) onReadExtendedMsg(id pp.ExtensionNumber, payload []byte) (e
 		}
 		return nil
 	case pexExtendedId:
-		if cl.config.DisablePEX {
+		if cl.config.DisablePEX || t.isPrivate() {
 			// TODO: Maybe close the connection. Check that we're not
 			// advertising that we support PEX if it's disabled.
 			return nil
