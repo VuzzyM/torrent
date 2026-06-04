@@ -1631,9 +1631,12 @@ func (t *Torrent) onIncompletePiece(piece pieceIndex) {
 func (t *Torrent) verifyPiece(piece pieceIndex) {
 	cl := t.cl
 	cl.lock()
-	defer cl.unlock()
+	isLocked := true
 	p := &t.pieces[piece]
 	defer func() {
+		if isLocked {
+			cl.unlock()
+		}
 		p.numVerifies++
 		cl.event.Broadcast()
 	}()
@@ -1652,9 +1655,11 @@ func (t *Torrent) verifyPiece(piece pieceIndex) {
 	t.updatePiecePriority(piece)
 	t.storageLock.RLock()
 	cl.unlock()
+	isLocked = false
 	sum := t.hashPiece(piece)
 	t.storageLock.RUnlock()
 	cl.lock()
+	isLocked = true
 	p.hashing = false
 	t.updatePiecePriority(piece)
 	t.pieceHashed(piece, sum == *p.hash)
