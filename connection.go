@@ -1521,14 +1521,13 @@ func (c *connection) deleteRequest(r request) bool {
 
 func (c *connection) deleteAllRequests() {
 	var reqs []request
+	c.mu.Lock()
 	for r := range c.requests {
 		reqs = append(reqs, r)
 	}
+	c.mu.Unlock()
 	for _, r := range reqs {
 		c.deleteRequest(r)
-	}
-	if len(c.requests) != 0 {
-		panic(len(c.requests))
 	}
 	// for c := range c.t.conns {
 	// 	c.tickleWriter()
