@@ -1530,6 +1530,9 @@ func (c *connection) deleteAllRequests() {
 	if len(c.requests) != 0 {
 		panic(len(c.requests))
 	}
+	// for c := range c.t.conns {
+	// 	c.tickleWriter()
+	// }
 }
 
 func (c *connection) tickleWriter() {
