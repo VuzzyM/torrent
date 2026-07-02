@@ -1521,11 +1521,11 @@ func (c *connection) deleteRequest(r request) bool {
 
 func (c *connection) deleteAllRequests() {
 	var reqs []request
-	c.mu.Lock()
+	c.mu().Lock()
 	for r := range c.requests {
 		reqs = append(reqs, r)
 	}
-	c.mu.Unlock()
+	c.mu().Unlock()
 	for _, r := range reqs {
 		c.deleteRequest(r)
 	}
