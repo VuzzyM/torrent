@@ -1488,26 +1488,24 @@ func (c *connection) deleteRequest(r request) bool {
 	delete(c.requests, r)
 	c.updateExpectingChunks()
 
-	c.t.lastRequestedMu.RLock()
-	timer, ok := c.t.lastRequested[r]
-	c.t.lastRequestedMu.RUnlock()
-
-	if ok {
-		timer.Stop()
-		c.t.lastRequestedMu.Lock()
+	c.t.lastRequestedMu.Lock()
+	if t, ok := c.t.lastRequested[r]; ok {
+		t.Stop()
 		delete(c.t.lastRequested, r)
-		c.t.lastRequestedMu.Unlock()
 	}
+	c.t.lastRequestedMu.Unlock()
 
 	c.t.pendingRequestsMu.Lock()
 	pr := c.t.pendingRequests
-	pr[r]--
-	n := pr[r]
-	if n == 0 {
-		delete(pr, r)
-	}
-	if n < 0 {
-		panic(n)
+	if n, ok := pr[r]; ok {
+		n--
+		if n == 0 {
+			delete(pr, r)
+		} else if n < 0 {
+			panic(n)
+		} else {
+			pr[r] = n
+		}
 	}
 	c.t.pendingRequestsMu.Unlock()
 
@@ -1522,15 +1520,16 @@ func (c *connection) deleteRequest(r request) bool {
 }
 
 func (c *connection) deleteAllRequests() {
+	var reqs []request
 	for r := range c.requests {
+		reqs = append(reqs, r)
+	}
+	for _, r := range reqs {
 		c.deleteRequest(r)
 	}
 	if len(c.requests) != 0 {
 		panic(len(c.requests))
 	}
-	// for c := range c.t.conns {
-	// 	c.tickleWriter()
-	// }
 }
 
 func (c *connection) tickleWriter() {
