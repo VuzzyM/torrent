@@ -1525,7 +1525,11 @@ func (c *connection) deleteRequest(r request) bool {
 }
 
 func (c *connection) deleteAllRequests() {
+	var reqs []request
 	for r := range c.requests {
+		reqs = append(reqs, r)
+	}
+	for _, r := range reqs {
 		c.deleteRequest(r)
 	}
 	if len(c.requests) != 0 {
