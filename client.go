@@ -983,6 +983,9 @@ func (cl *Client) sendInitialMessages(conn *connection, torrent *Torrent) {
 		}
 		conn.PostBitfield()
 	}()
+	// BEP 6: announce the Allowed Fast Set so the peer can request these
+	// pieces while still choked.
+	conn.sendAllowedFastSet()
 	if conn.PeerExtensionBytes.SupportsDHT() && cl.extensionBytes.SupportsDHT() && cl.haveDhtServer() {
 		conn.Post(pp.Message{
 			Type: pp.Port,
