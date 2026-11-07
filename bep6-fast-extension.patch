@@ -1,0 +1,362 @@
+diff --git a/client.go b/client.go
+index 0686b0f..05c4488 100644
+--- a/client.go
++++ b/client.go
+@@ -983,6 +983,12 @@ func (cl *Client) sendInitialMessages(conn *connection, torrent *Torrent) {
+ 		}
+ 		conn.PostBitfield()
+ 	}()
++	// BEP 6: announce the Allowed Fast Set so the peer can request these pieces
++	// while still choked. Only meaningful when both sides support Fast Extension
++	// and we know how many pieces the torrent has.
++	if conn.fastEnabled() && torrent.haveInfo() {
++		conn.sendAllowedFastSet()
++	}
+ 	if conn.PeerExtensionBytes.SupportsDHT() && cl.extensionBytes.SupportsDHT() && cl.haveDhtServer() {
+ 		conn.Post(pp.Message{
+ 			Type: pp.Port,
+diff --git a/connection.go b/connection.go
+index 3e930fc..9d3309b 100644
+--- a/connection.go
++++ b/connection.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/anacrolix/missinggo/iter"
+ 	"github.com/anacrolix/missinggo/prioritybitmap"
+ 	"github.com/anacrolix/torrent/bencode"
++	"github.com/anacrolix/torrent/internal/fast"
+ 	"github.com/anacrolix/torrent/mse"
+ 	pp "github.com/anacrolix/torrent/peer_protocol"
+ 	"github.com/pkg/errors"
+@@ -104,6 +105,9 @@ type connection struct {
+ 	// Pieces we've accepted chunks for from the peer.
+ 	peerTouchedPieces map[pieceIndex]struct{}
+ 	peerAllowedFast   bitmap.Bitmap
++	// Pieces we announced to the peer with AllowedFast (BEP 6). Requests for
++	// these must be served even while the peer is choked.
++	sentAllowedFast bitmap.Bitmap
+ 
+ 	PeerMaxRequests  int // Maximum pending requests the peer allows.
+ 	PeerExtensionIDs map[pp.ExtensionName]pp.ExtensionNumber
+@@ -432,7 +436,11 @@ func (cn *connection) Choke(msg messageWriter) (more bool) {
+ 	})
+ 	if cn.fastEnabled() {
+ 		for r := range cn.PeerRequests {
+-			// TODO: Don't reject pieces in allowed fast set.
++			// Pieces in the Allowed Fast Set stay queued: they are served
++			// while the peer is choked (see uploadAllowedFast).
++			if cn.mayServeWhileChoked(pieceIndex(r.Index)) {
++				continue
++			}
+ 			cn.reject(r)
+ 		}
+ 	} else {
+@@ -1077,7 +1085,7 @@ func (c *connection) onReadRequest(r request) error {
+ 		torrent.Add("duplicate requests received", 1)
+ 		return nil
+ 	}
+-	if c.Choked {
++	if c.Choked && !c.mayServeWhileChoked(pieceIndex(r.Index)) {
+ 		torrent.Add("requests received while choking", 1)
+ 		if c.fastEnabled() {
+ 			torrent.Add("requests rejected while choking", 1)
+@@ -1209,6 +1217,9 @@ func (c *connection) mainReadLoop() (err error) {
+ 		case pp.AllowedFast:
+ 			torrent.Add("allowed fasts received", 1)
+ 			// log.Fmsg("peer allowed fast: %d", msg.Index).AddValues(c, debugLogValue).Log(c.t.logger)
++			// Record the allowed-fast piece so requesting.go and shouldRequestWithoutBias
++			// can serve requests for it while we are choked. Without this Add, the
++			// peerAllowedFast bitmap stays empty and AllowedFast is effectively a no-op.
+ 			c.peerAllowedFast.Add(int(msg.Index))
+ 			c.updateRequests()
+ 		case pp.Suggest:
+@@ -1491,7 +1502,10 @@ another:
+ 		}
+ 		return true
+ 	}
+-	return c.Choke(msg)
++	if !c.Choke(msg) {
++		return false
++	}
++	return c.uploadAllowedFast(msg)
+ }
+ 
+ func (cn *connection) Drop() {
+@@ -1609,6 +1623,70 @@ func (c *connection) peerPriority() peerPriority {
+ 	return bep40PriorityIgnoreError(c.remoteIpPort(), c.t.cl.publicAddr(c.remoteIp()))
+ }
+ 
++// sendAllowedFastSet computes the BEP 6 Allowed Fast Set for the remote peer
++// and sends one AllowedFast message per piece in the set. Callers must ensure
++// fastEnabled() and torrent metadata are available; the function is a no-op
++// when those preconditions don't hold or when the peer's address is not IPv4
++// (BEP 6 defines the algorithm only for IPv4).
++func (cn *connection) sendAllowedFastSet() {
++	numPieces := uint32(cn.t.numPieces())
++	if numPieces == 0 {
++		return
++	}
++	ip := cn.remoteIp()
++	if ip == nil {
++		return
++	}
++	set := fast.GenerateFastSet(fast.DefaultK, numPieces, cn.t.infoHash, ip)
++	for _, idx := range set {
++		cn.sentAllowedFast.Add(int(idx))
++		cn.Post(pp.Message{
++			Type:  pp.AllowedFast,
++			Index: pp.Integer(idx),
++		})
++		torrent.Add("allowed fasts sent", 1)
++	}
++}
++
++// mayServeWhileChoked reports whether a request for piece must be served even
++// though we are choking the peer. BEP 6 requires this for the pieces of the
++// Allowed Fast Set we announced to it.
++func (cn *connection) mayServeWhileChoked(piece pieceIndex) bool {
++	return cn.fastEnabled() && !cn.t.cl.config.NoUpload && cn.sentAllowedFast.Get(int(piece))
++}
++
++// uploadAllowedFast sends the chunks requested by a choked peer for pieces in
++// the Allowed Fast Set we announced to it (BEP 6). Requests for any other
++// piece were already rejected when they arrived or when we choked the peer.
++func (c *connection) uploadAllowedFast(msg func(pp.Message) bool) bool {
++	for r := range c.PeerRequests {
++		if !c.mayServeWhileChoked(pieceIndex(r.Index)) {
++			continue
++		}
++		res := c.t.cl.config.UploadRateLimiter.ReserveN(time.Now(), int(r.Length))
++		if !res.OK() {
++			panic(fmt.Sprintf("upload rate limiter burst size < %d", r.Length))
++		}
++		if delay := res.Delay(); delay > 0 {
++			res.Cancel()
++			c.setRetryUploadTimer(delay)
++			return true
++		}
++		more, err := c.sendChunk(r, msg)
++		if err != nil {
++			// We can't read the chunk (e.g. piece lost from storage). The
++			// peer is already choked, so just tell it the request failed.
++			c.reject(r)
++			continue
++		}
++		delete(c.PeerRequests, r)
++		if !more {
++			return false
++		}
++	}
++	return true
++}
++
+ func (c *connection) remoteIp() net.IP {
+ 	return c.remoteAddr.IP
+ }
+diff --git a/internal/fast/fast.go b/internal/fast/fast.go
+new file mode 100644
+index 0000000..eadddab
+--- /dev/null
++++ b/internal/fast/fast.go
+@@ -0,0 +1,71 @@
++// Package fast implements the Allowed Fast Set generation algorithm from
++// BEP 6 (Fast Extension).
++//
++// http://www.bittorrent.org/beps/bep_0006.html
++//
++// The algorithm is a deterministic function of the peer's IPv4 (masked to /24)
++// and the torrent's info hash, producing a small set of piece indices the
++// local peer is willing to serve while the remote peer is choked. The remote
++// peer can independently compute the same set to verify the sender is honest.
++package fast
++
++import (
++	"crypto/sha1"
++	"encoding/binary"
++	"net"
++	"slices"
++)
++
++// DefaultK is the number of allowed-fast pieces normally announced per peer.
++// BEP 6 leaves the exact value implementation-defined; common clients use a
++// small constant (mainline / libtorrent use 10).
++const DefaultK = 10
++
++// GenerateFastSet returns up to k piece indices that the local peer will
++// allow the remote peer to request even while choked.
++//
++// k is the requested set size, numPieces is the total number of pieces in
++// the torrent, infoHash is the torrent's 20-byte info hash, and ip is the
++// remote peer's address (IPv4 only — IPv6 returns nil per BEP 6).
++//
++// The algorithm follows BEP 6's reference pseudocode exactly so the remote
++// peer can independently re-derive and verify the set.
++func GenerateFastSet(k int, numPieces uint32, infoHash [20]byte, ip net.IP) []uint32 {
++	if k <= 0 || numPieces == 0 {
++		return nil
++	}
++	// BEP 6 only defines the algorithm for IPv4. IPv6 callers get nil.
++	ip4 := ip.To4()
++	if ip4 == nil {
++		return nil
++	}
++	// Mask off the host bits, keeping the /24 network. This makes the set
++	// stable across reconnects from the same subnet, which is what the spec
++	// requires.
++	ip4 = ip4.Mask(net.CIDRMask(24, 32))
++
++	// x = masked_ip || infohash (4 + 20 = 24 bytes)
++	x := make([]byte, 24)
++	copy(x, ip4)
++	copy(x[4:], infoHash[:])
++
++	out := make([]uint32, 0, k)
++	contains := func(v uint32) bool { return slices.Contains(out, v) }
++
++	h := sha1.New()
++	// Outer cap mirrors the reference pseudocode: it bounds work for the
++	// pathological case where numPieces is tiny and many hash outputs collide.
++	for j := 0; j < k && len(out) < k; j++ {
++		h.Reset()
++		_, _ = h.Write(x)
++		x = h.Sum(x[:0])
++		for i := 0; i+4 <= 20 && len(out) < k; i += 4 {
++			y := binary.BigEndian.Uint32(x[i : i+4])
++			idx := y % numPieces
++			if !contains(idx) {
++				out = append(out, idx)
++			}
++		}
++	}
++	return out
++}
+diff --git a/internal/fast/fast_test.go b/internal/fast/fast_test.go
+new file mode 100644
+index 0000000..0741c14
+--- /dev/null
++++ b/internal/fast/fast_test.go
+@@ -0,0 +1,112 @@
++package fast
++
++import (
++	"net"
++	"reflect"
++	"testing"
++)
++
++// TestGenerateFastSet_BEP6Example verifies our output against the canonical
++// example from BEP 6:
++//
++//	ip        = 80.4.4.200  (masked to 80.4.4.0)
++//	infohash  = 0xAAAAAAAA... (20 bytes of 0xAA)
++//	numPieces = 1313
++//
++// The first seven allowed-fast pieces given by BEP 6 are:
++//
++//	1059, 431, 808, 1217, 287, 376, 1188
++//
++// http://www.bittorrent.org/beps/bep_0006.html
++func TestGenerateFastSet_BEP6Example(t *testing.T) {
++	var ih [20]byte
++	for i := range ih {
++		ih[i] = 0xAA
++	}
++	want := []uint32{1059, 431, 808, 1217, 287, 376, 1188}
++	got := GenerateFastSet(7, 1313, ih, net.IPv4(80, 4, 4, 200))
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("BEP 6 example mismatch:\nwant %v\n got %v", want, got)
++	}
++}
++
++// TestGenerateFastSet_Determinism asserts the function is a pure function of
++// its inputs. Two calls with identical args must produce byte-identical output.
++// Peers rely on this to independently verify the sender's allowed-fast set.
++func TestGenerateFastSet_Determinism(t *testing.T) {
++	var ih [20]byte
++	for i := range ih {
++		ih[i] = byte(i)
++	}
++	ip := net.IPv4(192, 0, 2, 17)
++	a := GenerateFastSet(10, 500, ih, ip)
++	b := GenerateFastSet(10, 500, ih, ip)
++	if !reflect.DeepEqual(a, b) {
++		t.Fatalf("non-deterministic output:\n#1 %v\n#2 %v", a, b)
++	}
++}
++
++// TestGenerateFastSet_Subnet24 asserts that IPs in the same /24 yield the
++// same fast set (BEP 6 explicitly masks to /24 so a single host can't game
++// the set by switching ports).
++func TestGenerateFastSet_Subnet24(t *testing.T) {
++	var ih [20]byte
++	for i := range ih {
++		ih[i] = byte(i ^ 0x55)
++	}
++	a := GenerateFastSet(8, 200, ih, net.IPv4(10, 1, 2, 3))
++	b := GenerateFastSet(8, 200, ih, net.IPv4(10, 1, 2, 250))
++	c := GenerateFastSet(8, 200, ih, net.IPv4(10, 1, 3, 3)) // different /24
++	if !reflect.DeepEqual(a, b) {
++		t.Fatalf("same /24 produced different sets:\n.3 -> %v\n.250 -> %v", a, b)
++	}
++	if reflect.DeepEqual(a, c) {
++		t.Fatalf("different /24 produced the same set; mask not applied")
++	}
++}
++
++// TestGenerateFastSet_IPv6Nil — BEP 6 only defines the algorithm for IPv4.
++// The function must signal "no fast set" for IPv6-only peers by returning nil.
++func TestGenerateFastSet_IPv6Nil(t *testing.T) {
++	var ih [20]byte
++	ipv6 := net.ParseIP("2001:db8::1")
++	got := GenerateFastSet(10, 1000, ih, ipv6)
++	if got != nil {
++		t.Fatalf("expected nil for IPv6 peer; got %v", got)
++	}
++}
++
++// TestGenerateFastSet_UniqueIndices — every produced index must be unique.
++// The outer/inner loops include a "contains" check; this test confirms it
++// holds even with a small piece count where collisions are likely.
++func TestGenerateFastSet_UniqueIndices(t *testing.T) {
++	var ih [20]byte
++	for i := range ih {
++		ih[i] = 0xFE
++	}
++	// Tiny torrent: 7 pieces, ask for 7 → every index must appear at most once.
++	got := GenerateFastSet(7, 7, ih, net.IPv4(203, 0, 113, 1))
++	seen := map[uint32]bool{}
++	for _, v := range got {
++		if seen[v] {
++			t.Fatalf("duplicate index %d in %v", v, got)
++		}
++		seen[v] = true
++		if v >= 7 {
++			t.Fatalf("index %d out of range for numPieces=7", v)
++		}
++	}
++}
++
++// TestGenerateFastSet_EdgeCases — defensive: zero k or zero pieces should
++// return nil rather than panic. The caller doesn't have to guard.
++func TestGenerateFastSet_EdgeCases(t *testing.T) {
++	var ih [20]byte
++	ip := net.IPv4(1, 2, 3, 4)
++	if got := GenerateFastSet(0, 100, ih, ip); got != nil {
++		t.Fatalf("k=0 should return nil, got %v", got)
++	}
++	if got := GenerateFastSet(5, 0, ih, ip); got != nil {
++		t.Fatalf("numPieces=0 should return nil, got %v", got)
++	}
++}
+diff --git a/peer_protocol/msg.go b/peer_protocol/msg.go
+index d7e5f5a..0d1e5be 100644
+--- a/peer_protocol/msg.go
++++ b/peer_protocol/msg.go
+@@ -57,7 +57,7 @@ func (msg Message) MarshalBinary() (data []byte, err error) {
+ 		}
+ 		switch msg.Type {
+ 		case Choke, Unchoke, Interested, NotInterested, HaveAll, HaveNone:
+-		case Have:
++		case Have, AllowedFast, Suggest:
+ 			err = binary.Write(buf, binary.BigEndian, msg.Index)
+ 		case Request, Cancel, Reject:
+ 			for _, i := range []Integer{msg.Index, msg.Begin, msg.Length} {

@@ -20,6 +20,7 @@ import (
 	"github.com/anacrolix/missinggo/iter"
 	"github.com/anacrolix/missinggo/prioritybitmap"
 	"github.com/anacrolix/torrent/bencode"
+	"github.com/anacrolix/torrent/internal/fast"
 	"github.com/anacrolix/torrent/mse"
 	pp "github.com/anacrolix/torrent/peer_protocol"
 	"github.com/pkg/errors"
@@ -104,6 +105,9 @@ type connection struct {
 	// Pieces we've accepted chunks for from the peer.
 	peerTouchedPieces map[pieceIndex]struct{}
 	peerAllowedFast   bitmap.Bitmap
+	// Pieces we announced to the peer with AllowedFast (BEP 6). Requests for
+	// these must be served even while the peer is choked.
+	sentAllowedFast bitmap.Bitmap
 
 	PeerMaxRequests  int // Maximum pending requests the peer allows.
 	PeerExtensionIDs map[pp.ExtensionName]pp.ExtensionNumber
@@ -432,7 +436,11 @@ func (cn *connection) Choke(msg messageWriter) (more bool) {
 	})
 	if cn.fastEnabled() {
 		for r := range cn.PeerRequests {
-			// TODO: Don't reject pieces in allowed fast set.
+			// Pieces in the Allowed Fast Set stay queued: they are served
+			// while the peer is choked (see uploadAllowedFast).
+			if cn.mayServeWhileChoked(pieceIndex(r.Index)) {
+				continue
+			}
 			cn.reject(r)
 		}
 	} else {
@@ -1077,7 +1085,7 @@ func (c *connection) onReadRequest(r request) error {
 		torrent.Add("duplicate requests received", 1)
 		return nil
 	}
-	if c.Choked {
+	if c.Choked && !c.mayServeWhileChoked(pieceIndex(r.Index)) {
 		torrent.Add("requests received while choking", 1)
 		if c.fastEnabled() {
 			torrent.Add("requests rejected while choking", 1)
@@ -1209,6 +1217,9 @@ func (c *connection) mainReadLoop() (err error) {
 		case pp.AllowedFast:
 			torrent.Add("allowed fasts received", 1)
 			// log.Fmsg("peer allowed fast: %d", msg.Index).AddValues(c, debugLogValue).Log(c.t.logger)
+			// Record the allowed-fast piece so requesting.go and shouldRequestWithoutBias
+			// can serve requests for it while we are choked. Without this Add, the
+			// peerAllowedFast bitmap stays empty and AllowedFast is effectively a no-op.
 			c.peerAllowedFast.Add(int(msg.Index))
 			c.updateRequests()
 		case pp.Suggest:
@@ -1491,7 +1502,10 @@ another:
 		}
 		return true
 	}
-	return c.Choke(msg)
+	if !c.Choke(msg) {
+		return false
+	}
+	return c.uploadAllowedFast(msg)
 }
 
 func (cn *connection) Drop() {
@@ -1607,6 +1621,70 @@ func (c *connection) setTorrent(t *Torrent) {
 
 func (c *connection) peerPriority() peerPriority {
 	return bep40PriorityIgnoreError(c.remoteIpPort(), c.t.cl.publicAddr(c.remoteIp()))
+}
+
+// sendAllowedFastSet computes the BEP 6 Allowed Fast Set for the remote peer
+// and sends one AllowedFast message per piece in the set. Callers must ensure
+// fastEnabled() and torrent metadata are available; the function is a no-op
+// when those preconditions don't hold or when the peer's address is not IPv4
+// (BEP 6 defines the algorithm only for IPv4).
+func (cn *connection) sendAllowedFastSet() {
+	numPieces := uint32(cn.t.numPieces())
+	if numPieces == 0 {
+		return
+	}
+	ip := cn.remoteIp()
+	if ip == nil {
+		return
+	}
+	set := fast.GenerateFastSet(fast.DefaultK, numPieces, cn.t.infoHash, ip)
+	for _, idx := range set {
+		cn.sentAllowedFast.Add(int(idx))
+		cn.Post(pp.Message{
+			Type:  pp.AllowedFast,
+			Index: pp.Integer(idx),
+		})
+		torrent.Add("allowed fasts sent", 1)
+	}
+}
+
+// mayServeWhileChoked reports whether a request for piece must be served even
+// though we are choking the peer. BEP 6 requires this for the pieces of the
+// Allowed Fast Set we announced to it.
+func (cn *connection) mayServeWhileChoked(piece pieceIndex) bool {
+	return cn.fastEnabled() && !cn.t.cl.config.NoUpload && cn.sentAllowedFast.Get(int(piece))
+}
+
+// uploadAllowedFast sends the chunks requested by a choked peer for pieces in
+// the Allowed Fast Set we announced to it (BEP 6). Requests for any other
+// piece were already rejected when they arrived or when we choked the peer.
+func (c *connection) uploadAllowedFast(msg func(pp.Message) bool) bool {
+	for r := range c.PeerRequests {
+		if !c.mayServeWhileChoked(pieceIndex(r.Index)) {
+			continue
+		}
+		res := c.t.cl.config.UploadRateLimiter.ReserveN(time.Now(), int(r.Length))
+		if !res.OK() {
+			panic(fmt.Sprintf("upload rate limiter burst size < %d", r.Length))
+		}
+		if delay := res.Delay(); delay > 0 {
+			res.Cancel()
+			c.setRetryUploadTimer(delay)
+			return true
+		}
+		more, err := c.sendChunk(r, msg)
+		if err != nil {
+			// We can't read the chunk (e.g. piece lost from storage). The
+			// peer is already choked, so just tell it the request failed.
+			c.reject(r)
+			continue
+		}
+		delete(c.PeerRequests, r)
+		if !more {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *connection) remoteIp() net.IP {
