@@ -20,6 +20,7 @@ import (
 	"github.com/anacrolix/missinggo/iter"
 	"github.com/anacrolix/missinggo/prioritybitmap"
 	"github.com/anacrolix/torrent/bencode"
+	"github.com/anacrolix/torrent/fast"
 	"github.com/anacrolix/torrent/mse"
 	pp "github.com/anacrolix/torrent/peer_protocol"
 	"github.com/pkg/errors"
@@ -1209,6 +1210,9 @@ func (c *connection) mainReadLoop() (err error) {
 		case pp.AllowedFast:
 			torrent.Add("allowed fasts received", 1)
 			// log.Fmsg("peer allowed fast: %d", msg.Index).AddValues(c, debugLogValue).Log(c.t.logger)
+			// Record the allowed-fast piece so requesting.go and shouldRequestWithoutBias
+			// can serve requests for it while we are choked. Without this Add, the
+			// peerAllowedFast bitmap stays empty and AllowedFast is effectively a no-op.
 			c.peerAllowedFast.Add(int(msg.Index))
 			c.updateRequests()
 		case pp.Suggest:
@@ -1607,6 +1611,30 @@ func (c *connection) setTorrent(t *Torrent) {
 
 func (c *connection) peerPriority() peerPriority {
 	return bep40PriorityIgnoreError(c.remoteIpPort(), c.t.cl.publicAddr(c.remoteIp()))
+}
+
+// sendAllowedFastSet computes the BEP 6 Allowed Fast Set for the remote peer
+// and sends one AllowedFast message per piece in the set. Callers must ensure
+// fastEnabled() and torrent metadata are available; the function is a no-op
+// when those preconditions don't hold or when the peer's address is not IPv4
+// (BEP 6 defines the algorithm only for IPv4).
+func (cn *connection) sendAllowedFastSet() {
+	numPieces := uint32(cn.t.numPieces())
+	if numPieces == 0 {
+		return
+	}
+	ip := cn.remoteIp()
+	if ip == nil {
+		return
+	}
+	set := fast.GenerateFastSet(fast.DefaultK, numPieces, cn.t.infoHash, ip)
+	for _, idx := range set {
+		cn.Post(pp.Message{
+			Type:  pp.AllowedFast,
+			Index: pp.Integer(idx),
+		})
+		torrent.Add("allowed fasts sent", 1)
+	}
 }
 
 func (c *connection) remoteIp() net.IP {
