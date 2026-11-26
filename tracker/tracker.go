@@ -61,6 +61,7 @@ type Announce struct {
 	// If the port is zero, it's assumed to be the same as the Request.Port.
 	ClientIp6 krpc.NodeAddr
 	Context   context.Context
+	DisableIPv6 bool
 }
 
 func (me Announce) Do() (res AnnounceResponse, err error) {
