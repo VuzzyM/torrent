@@ -119,7 +119,7 @@ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error)
 
     trace := &httptrace.ClientTrace{
 		GotConn: func(i httptrace.GotConnInfo) {
-			log.Printf("announce connected to %s", i.Conn.RemoteAddr())
+			log.Printf("announce %s connected to %s", _url.Host, i.Conn.RemoteAddr())
 		},
 	}
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
