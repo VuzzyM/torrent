@@ -114,12 +114,18 @@ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error)
 	if opt.Context != nil {
 		req = req.WithContext(opt.Context)
 	}
+	dialer := &net.Dialer{
+		Timeout: 15 * time.Second,
+	}
 	resp, err := (&http.Client{
 		Timeout: time.Second * 15,
 		Transport: &http.Transport{
-			Dial: (&net.Dialer{
-				Timeout: 15 * time.Second,
-			}).Dial,
+			Dial: func(network, addr string) (net.Conn, error) {
+				if opt.DisableIPv6 {
+					network = "tcp4"
+				}
+				return dialer.Dial(network, addr)
+			},
 			Proxy:               opt.HTTPProxy,
 			TLSHandshakeTimeout: 15 * time.Second,
 			TLSClientConfig: &tls.Config{
