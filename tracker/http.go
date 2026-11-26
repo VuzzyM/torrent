@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
+	"net/http/httptrace"
 	"net"
 	"net/http"
 	"net/url"
@@ -114,6 +116,14 @@ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error)
 	if opt.Context != nil {
 		req = req.WithContext(opt.Context)
 	}
+
+    trace := &httptrace.ClientTrace{
+		GotConn: func(i httptrace.GotConnInfo) {
+			log.Printf("announce connected to %s", i.Conn.RemoteAddr())
+		},
+	}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	
 	resp, err := (&http.Client{
 		Timeout: time.Second * 15,
 		Transport: &http.Transport{
