@@ -121,6 +121,7 @@ func (me *trackerScraper) announce() (ret trackerAnnounceResult) {
 		UdpNetwork: me.u.Scheme,
 		ClientIp4:  krpc.NodeAddr{IP: me.t.cl.config.PublicIp4},
 		ClientIp6:  krpc.NodeAddr{IP: me.t.cl.config.PublicIp6},
+		DisableIPv6: me.t.cl.config.DisableIPv6,
 	}.Do()
 	me.t.logger.WithDefaultLevel(log.Debug).Printf("announce to %q returned %#v: %v", me.u.String(), res, err)
 	if err != nil {
