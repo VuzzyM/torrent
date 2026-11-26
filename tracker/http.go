@@ -86,12 +86,12 @@ func setAnnounceParams(_url *url.URL, ar *AnnounceRequest, opts Announce) {
 	// Take EncryptionPolicy or something like it as a parameter.
 	q.Set("supportcrypto", "1")
 	if opts.ClientIp4.IP != nil {
-		q.Set("ipv4", opts.ClientIp4.String())
-		q.Add("ip", opts.ClientIp4.String())
+		q.Set("ipv4", opts.ClientIp4.IP.String())
+		q.Add("ip", opts.ClientIp4.IP.String())
 	}
 	if opts.ClientIp6.IP != nil {
-		q.Set("ipv6", opts.ClientIp6.String())
-		q.Add("ip", opts.ClientIp6.String())
+		q.Set("ipv6", opts.ClientIp6.IP.String())
+		q.Add("ip", opts.ClientIp6.IP.String())
 	}
 	// We're operating purely on query-escaped strings, where + would have already been encoded to
 	// %20 and + has no other special meaning. See https://github.com/anacrolix/torrent/issues/534.
