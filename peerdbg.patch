@@ -1,0 +1,160 @@
+--- a/client.go
++++ b/client.go
+@@ -297,6 +297,8 @@
+ 		cl.onClose = append(cl.onClose, cl.lpd.lpdStop)
+ 	}
+ 
++	go cl.peerDbgLoop()
++
+ 	return
+ }
+ 
+@@ -607,6 +609,9 @@
+ 						tc.SetLinger(0)
+ 					}
+ 					countDialResult(err)
++					if err != nil {
++						peerDbg("dial failed: network=%s addr=%s err=%v", network, addr, err)
++					}
+ 					dr := dialResult{c, network}
+ 					if c == nil {
+ 						if err != nil && forgettableDialError(err) {
+@@ -627,6 +632,9 @@
+ 			return true
+ 		})
+ 	}()
++	if left == 0 {
++		peerDbg("dial skipped: no listener network enabled for peers, addr=%s", addr)
++	}
+ 	var res dialResult
+ 	// Wait for a successful connection.
+ 	func() {
+@@ -749,18 +757,24 @@
+ 	// failure.
+ 	cl.noLongerHalfOpen(t, addr.String())
+ 	if err != nil {
++		peerDbg("outgoing conn error: addr=%s err=%v", addr, err)
+ 		if cl.config.Debug {
+ 			cl.logger.Levelf(log.Error, "error establishing outgoing connection: %s", err)
+ 		}
+ 		return
+ 	}
+ 	if c == nil {
++		peerDbg("outgoing conn not established: addr=%s", addr)
+ 		return
+ 	}
+ 	defer c.Close()
+ 	c.Discovery = ps
+-	if err := cl.runHandshookConn(c, t); err != nil && cl.config.Debug {
+-		cl.logger.Levelf(log.Error, "Outgoing connection error %s", err)
++	peerDbg("outgoing conn established: addr=%s", addr)
++	if err := cl.runHandshookConn(c, t); err != nil {
++		peerDbg("outgoing conn ended: addr=%s err=%v", addr, err)
++		if cl.config.Debug {
++			cl.logger.Levelf(log.Error, "Outgoing connection error %s", err)
++		}
+ 	}
+ }
+ 
+@@ -1049,15 +1063,19 @@
+ 
+ func (cl *Client) badPeerIPPort(ip net.IP, port int) bool {
+ 	if port == 0 {
++		peerDbg("peer rejected: port=0 ip=%s", ip)
+ 		return true
+ 	}
+ 	if cl.dopplegangerAddr(net.JoinHostPort(ip.String(), strconv.FormatInt(int64(port), 10))) {
++		peerDbg("peer rejected: doppelganger ip=%s port=%d", ip, port)
+ 		return true
+ 	}
+ 	if _, ok := cl.ipBlockRange(ip); ok {
++		peerDbg("peer rejected: blocklist ip=%s", ip)
+ 		return true
+ 	}
+ 	if _, ok := cl.badPeerIPs[ip.String()]; ok {
++		peerDbg("peer rejected: bad peer ip=%s", ip)
+ 		return true
+ 	}
+ 	return false
+--- a/tracker_scraper.go
++++ b/tracker_scraper.go
+@@ -104,6 +104,7 @@
+ 	ret.Interval = 5 * time.Minute
+ 	ip, err := me.getIp()
+ 	if err != nil {
++		peerDbg("tracker getIp failed: host=%s err=%s", me.u.Host, redactSecrets(err.Error()))
+ 		ret.Err = fmt.Errorf("error getting ip: %s", err)
+ 		return
+ 	}
+@@ -124,10 +125,22 @@
+ 	}.Do()
+ 	me.t.logger.WithDefaultLevel(log.Debug).Printf("announce to %q returned %#v: %v", me.u.String(), res, err)
+ 	if err != nil {
++		peerDbg("tracker announce failed: host=%s err=%s", me.u.Host, redactSecrets(err.Error()))
+ 		ret.Err = fmt.Errorf("error announcing: %s", err)
+ 		return
+ 	}
++	var n4, n6 int
++	for _, p := range res.Peers {
++		if p.IP.To4() != nil {
++			n4++
++		} else {
++			n6++
++		}
++	}
++	peerDbg("tracker announce ok: scheme=%s host=%s resolvedIp=%s peers=%d (v4=%d v6=%d) seeders=%d leechers=%d interval=%ds", me.u.Scheme, me.u.Host, ip, len(res.Peers), n4, n6, res.Seeders, res.Leechers, res.Interval)
+ 	me.t.AddPeers(Peers(nil).AppendFromTracker(res.Peers))
++	st := me.t.Stats()
++	peerDbg("after AddPeers: host=%s total=%d pending=%d halfopen=%d active=%d", me.u.Host, st.TotalPeers, st.PendingPeers, st.HalfOpenPeers, st.ActivePeers)
+ 	ret.NumPeers = len(res.Peers)
+ 	ret.Interval = time.Duration(res.Interval) * time.Second
+ 	return
+--- a/tracker/http.go
++++ b/tracker/http.go
+@@ -5,6 +5,7 @@
+ 	"crypto/tls"
+ 	"fmt"
+ 	"io"
++	"log"
+ 	"net"
+ 	"net/http"
+ 	"net/url"
+@@ -108,6 +109,10 @@
+ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error) {
+ 	_url = httptoo.CopyURL(_url)
+ 	setAnnounceParams(_url, &opt.Request, opt)
++	{
++		q := _url.Query()
++		log.Printf("[peerdbg] announce params: host=%s key=%q ipv4=%q ipv6=%q ip=%q event=%q port=%q left=%q", _url.Host, q.Get("key"), q.Get("ipv4"), q.Get("ipv6"), q["ip"], q.Get("event"), q.Get("port"), q.Get("left"))
++	}
+ 	req, err := http.NewRequest("GET", _url.String(), nil)
+ 	req.Header.Set("User-Agent", opt.UserAgent)
+ 	req.Host = opt.HostHeader
+@@ -117,9 +122,17 @@
+ 	resp, err := (&http.Client{
+ 		Timeout: time.Second * 15,
+ 		Transport: &http.Transport{
+-			Dial: (&net.Dialer{
+-				Timeout: 15 * time.Second,
+-			}).Dial,
++			Dial: func(network, addr string) (net.Conn, error) {
++				c, err := (&net.Dialer{
++					Timeout: 15 * time.Second,
++				}).Dial(network, addr)
++				if err != nil {
++					log.Printf("[peerdbg] announce dial failed: addr=%s network=%s err=%v", addr, network, err)
++				} else {
++					log.Printf("[peerdbg] announce conn: addr=%s remote=%s", addr, c.RemoteAddr())
++				}
++				return c, err
++			},
+ 			Proxy:               opt.HTTPProxy,
+ 			TLSHandshakeTimeout: 15 * time.Second,
+ 			TLSClientConfig: &tls.Config{
+@@ -168,5 +181,6 @@
+ 			Port: na.Port,
+ 		})
+ 	}
++	log.Printf("[peerdbg] announce response: host=%s peers4=%d peers6=%d", _url.Host, len(trackerResponse.Peers), len(trackerResponse.Peers6))
+ 	return
+ }

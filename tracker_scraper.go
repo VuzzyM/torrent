@@ -104,6 +104,7 @@ func (me *trackerScraper) announce() (ret trackerAnnounceResult) {
 	ret.Interval = 5 * time.Minute
 	ip, err := me.getIp()
 	if err != nil {
+		peerDbg("tracker getIp failed: host=%s err=%s", me.u.Host, redactSecrets(err.Error()))
 		ret.Err = fmt.Errorf("error getting ip: %s", err)
 		return
 	}
@@ -124,10 +125,22 @@ func (me *trackerScraper) announce() (ret trackerAnnounceResult) {
 	}.Do()
 	me.t.logger.WithDefaultLevel(log.Debug).Printf("announce to %q returned %#v: %v", me.u.String(), res, err)
 	if err != nil {
+		peerDbg("tracker announce failed: host=%s err=%s", me.u.Host, redactSecrets(err.Error()))
 		ret.Err = fmt.Errorf("error announcing: %s", err)
 		return
 	}
+	var n4, n6 int
+	for _, p := range res.Peers {
+		if p.IP.To4() != nil {
+			n4++
+		} else {
+			n6++
+		}
+	}
+	peerDbg("tracker announce ok: scheme=%s host=%s resolvedIp=%s peers=%d (v4=%d v6=%d) seeders=%d leechers=%d interval=%ds", me.u.Scheme, me.u.Host, ip, len(res.Peers), n4, n6, res.Seeders, res.Leechers, res.Interval)
 	me.t.AddPeers(Peers(nil).AppendFromTracker(res.Peers))
+	st := me.t.Stats()
+	peerDbg("after AddPeers: host=%s total=%d pending=%d halfopen=%d active=%d", me.u.Host, st.TotalPeers, st.PendingPeers, st.HalfOpenPeers, st.ActivePeers)
 	ret.NumPeers = len(res.Peers)
 	ret.Interval = time.Duration(res.Interval) * time.Second
 	return

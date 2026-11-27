@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -296,6 +298,8 @@ func NewClient(cfg *ClientConfig) (cl *Client, err error) {
 		cl.lpd.lpdStart(cl, *cfg.LocalServiceDiscovery)
 		cl.onClose = append(cl.onClose, cl.lpd.lpdStop)
 	}
+
+	go cl.peerDbgLoop()
 
 	return
 }
@@ -607,6 +611,9 @@ func (cl *Client) dialFirst(ctx context.Context, addr string) dialResult {
 						tc.SetLinger(0)
 					}
 					countDialResult(err)
+					if err != nil {
+						peerDbg("dial failed: network=%s addr=%s err=%v", network, addr, err)
+					}
 					dr := dialResult{c, network}
 					if c == nil {
 						if err != nil && forgettableDialError(err) {
@@ -627,6 +634,9 @@ func (cl *Client) dialFirst(ctx context.Context, addr string) dialResult {
 			return true
 		})
 	}()
+	if left == 0 {
+		peerDbg("dial skipped: no listener network enabled for peers, addr=%s", addr)
+	}
 	var res dialResult
 	// Wait for a successful connection.
 	func() {
@@ -749,18 +759,24 @@ func (cl *Client) outgoingConnection(t *Torrent, addr IpPort, ps peerSource) {
 	// failure.
 	cl.noLongerHalfOpen(t, addr.String())
 	if err != nil {
+		peerDbg("outgoing conn error: addr=%s err=%v", addr, err)
 		if cl.config.Debug {
 			cl.logger.Levelf(log.Error, "error establishing outgoing connection: %s", err)
 		}
 		return
 	}
 	if c == nil {
+		peerDbg("outgoing conn not established: addr=%s", addr)
 		return
 	}
 	defer c.Close()
 	c.Discovery = ps
-	if err := cl.runHandshookConn(c, t); err != nil && cl.config.Debug {
-		cl.logger.Levelf(log.Error, "Outgoing connection error %s", err)
+	peerDbg("outgoing conn established: addr=%s", addr)
+	if err := cl.runHandshookConn(c, t); err != nil {
+		peerDbg("outgoing conn ended: addr=%s err=%v", addr, err)
+		if cl.config.Debug {
+			cl.logger.Levelf(log.Error, "Outgoing connection error %s", err)
+		}
 	}
 }
 
@@ -1049,15 +1065,19 @@ func (cl *Client) gotMetadataExtensionMsg(payload []byte, t *Torrent, c *connect
 
 func (cl *Client) badPeerIPPort(ip net.IP, port int) bool {
 	if port == 0 {
+		peerDbg("peer rejected: port=0 ip=%s", ip)
 		return true
 	}
 	if cl.dopplegangerAddr(net.JoinHostPort(ip.String(), strconv.FormatInt(int64(port), 10))) {
+		peerDbg("peer rejected: doppelganger ip=%s port=%d", ip, port)
 		return true
 	}
 	if _, ok := cl.ipBlockRange(ip); ok {
+		peerDbg("peer rejected: blocklist ip=%s", ip)
 		return true
 	}
 	if _, ok := cl.badPeerIPs[ip.String()]; ok {
+		peerDbg("peer rejected: bad peer ip=%s", ip)
 		return true
 	}
 	return false
@@ -1487,4 +1507,51 @@ func (cl clientLocker) Lock() {
 
 func (cl clientLocker) Unlock() {
 	cl.unlock()
+}
+
+// Temporary debugging helpers. Everything is prefixed with [peerdbg] so it's easy to grep and remove.
+
+func peerDbg(format string, args ...interface{}) {
+	stdlog.Printf("[peerdbg] "+format, args...)
+}
+
+var hexSecretRe = regexp.MustCompile(`[0-9a-fA-F]{20,}`)
+
+// HTTP client errors contain the full tracker URL, which has the passkey in it.
+func redactSecrets(s string) string {
+	return hexSecretRe.ReplaceAllString(s, "<redacted>")
+}
+
+func (cl *Client) peerDbgLoop() {
+	cl.rLock()
+	cfg := cl.config
+	var listeners []string
+	for _, s := range cl.conns {
+		listeners = append(listeners, s.Addr().Network()+"://"+s.Addr().String())
+	}
+	cl.rUnlock()
+	peerDbg("config: DisableIPv6=%v DisableIPv4=%v DisableIPv4Peers=%v DisableTCP=%v DisableUTP=%v NoDHT=%v DisablePEX=%v DisableTrackers=%v PublicIp4=%v PublicIp6=%v listeners=%v",
+		cfg.DisableIPv6, cfg.DisableIPv4, cfg.DisableIPv4Peers, cfg.DisableTCP, cfg.DisableUTP, cfg.NoDHT, cfg.DisablePEX, cfg.DisableTrackers, cfg.PublicIp4, cfg.PublicIp6, listeners)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		if cl.closed.IsSet() {
+			return
+		}
+		cl.rLock()
+		ts := make([]*Torrent, 0, len(cl.torrents))
+		for _, t := range cl.torrents {
+			ts = append(ts, t)
+		}
+		cl.rUnlock()
+		for _, t := range ts {
+			s := t.Stats()
+			private := false
+			if info := t.Info(); info != nil && info.Private != nil {
+				private = *info.Private
+			}
+			peerDbg("torrent %.8s: private=%v total=%d pending=%d halfopen=%d active=%d seeders=%d",
+				t.infoHash.HexString(), private, s.TotalPeers, s.PendingPeers, s.HalfOpenPeers, s.ActivePeers, s.ConnectedSeeders)
+		}
+	}
 }

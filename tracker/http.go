@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -69,6 +70,7 @@ func (me *Peers) UnmarshalBencode(b []byte) (err error) {
 func setAnnounceParams(_url *url.URL, ar *AnnounceRequest, opts Announce) {
 	q := _url.Query()
 
+    q.Set("key", strconv.FormatInt(int64(ar.Key), 10))
 	q.Set("info_hash", string(ar.InfoHash[:]))
 	q.Set("peer_id", string(ar.PeerId[:]))
 	// AFAICT, port is mandatory, and there's no implied port key.
@@ -86,12 +88,12 @@ func setAnnounceParams(_url *url.URL, ar *AnnounceRequest, opts Announce) {
 	// Take EncryptionPolicy or something like it as a parameter.
 	q.Set("supportcrypto", "1")
 	if opts.ClientIp4.IP != nil {
-		q.Set("ipv4", opts.ClientIp4.String())
-		q.Add("ip", opts.ClientIp4.String())
+		q.Set("ipv4", opts.ClientIp4.IP.String())
+		q.Add("ip", opts.ClientIp4.IP.String())
 	}
 	if opts.ClientIp6.IP != nil {
-		q.Set("ipv6", opts.ClientIp6.String())
-		q.Add("ip", opts.ClientIp6.String())
+		q.Set("ipv6", opts.ClientIp6.IP.String())
+		q.Add("ip", opts.ClientIp6.IP.String())
 	}
 	// We're operating purely on query-escaped strings, where + would have already been encoded to
 	// %20 and + has no other special meaning. See https://github.com/anacrolix/torrent/issues/534.
@@ -108,6 +110,10 @@ func setAnnounceParams(_url *url.URL, ar *AnnounceRequest, opts Announce) {
 func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error) {
 	_url = httptoo.CopyURL(_url)
 	setAnnounceParams(_url, &opt.Request, opt)
+	{
+		q := _url.Query()
+		log.Printf("[peerdbg] announce params: host=%s key=%q ipv4=%q ipv6=%q ip=%q event=%q port=%q left=%q", _url.Host, q.Get("key"), q.Get("ipv4"), q.Get("ipv6"), q["ip"], q.Get("event"), q.Get("port"), q.Get("left"))
+	}
 	req, err := http.NewRequest("GET", _url.String(), nil)
 	req.Header.Set("User-Agent", opt.UserAgent)
 	req.Host = opt.HostHeader
@@ -117,9 +123,17 @@ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error)
 	resp, err := (&http.Client{
 		Timeout: time.Second * 15,
 		Transport: &http.Transport{
-			Dial: (&net.Dialer{
-				Timeout: 15 * time.Second,
-			}).Dial,
+			Dial: func(network, addr string) (net.Conn, error) {
+				c, err := (&net.Dialer{
+					Timeout: 15 * time.Second,
+				}).Dial(network, addr)
+				if err != nil {
+					log.Printf("[peerdbg] announce dial failed: addr=%s network=%s err=%v", addr, network, err)
+				} else {
+					log.Printf("[peerdbg] announce conn: addr=%s remote=%s", addr, c.RemoteAddr())
+				}
+				return c, err
+			},
 			Proxy:               opt.HTTPProxy,
 			TLSHandshakeTimeout: 15 * time.Second,
 			TLSClientConfig: &tls.Config{
@@ -168,5 +182,6 @@ func announceHTTP(opt Announce, _url *url.URL) (ret AnnounceResponse, err error)
 			Port: na.Port,
 		})
 	}
+	log.Printf("[peerdbg] announce response: host=%s peers4=%d peers6=%d", _url.Host, len(trackerResponse.Peers), len(trackerResponse.Peers6))
 	return
 }
